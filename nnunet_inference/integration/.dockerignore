@@ -1,0 +1,19 @@
+# Build products must never enter a later Docker build context.
+release_packages/
+*.tar
+*.tar.gz
+*.sha256
+smoke-test-output/
+
+# Development-only files.
+.claude/
+**/__pycache__/
+*.py[cod]
+*~
+**/#*#
+
+# Host-side helpers and documentation are not needed at runtime.
+build.sh
+smoke-test.sh
+validate_output.py
+README.md

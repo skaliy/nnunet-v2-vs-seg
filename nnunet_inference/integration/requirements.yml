@@ -1,0 +1,15 @@
+name: nnunet-vsseg
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      # CPU torch is pinned before nnunetv2 to avoid resolving CUDA wheels.
+      - --extra-index-url https://download.pytorch.org/whl/cpu
+      - torch==2.6.0+cpu
+      - nnunetv2==2.6.2
+      - imagedata==3.8.14
+      - SimpleITK==2.5.2
+      - pydicom==2.4.4

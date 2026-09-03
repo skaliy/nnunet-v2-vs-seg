@@ -1,0 +1,63 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Editor and notebook state
+.ipynb_checkpoints/
+#*#
+*~
+.#*
+
+# Medical images and local datasets
+/nnUNet_data/
+/data/
+/DICOM/
+/nnunet_inference/tests/dicom_input/
+*.dcm
+*.dicom
+*.nii
+*.nii.gz
+*.nrrd
+*.mha
+*.mhd
+*.raw
+
+# Model weights, arrays, and experiment outputs
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.npy
+*.npz
+*.pkl
+*.log
+/cv_metrics/
+/cv_results*/
+/mlruns/
+/wandb/
+
+# Local DICOM validation outputs
+/nnunet_inference/tests/output/
+/nnunet_inference/tests/*_overlay.png
+/nnunet_inference/integration/smoke-test-output/
+
+# Container build staging and exported images
+/nnunet_inference/integration/release_packages/
+/nnunet_inference/integration/_pkg/
+/nnunet_inference/integration/model/
+*.tar
+*.tar.gz
+*.tgz
+
+# Local credentials and machine-specific state
+.env
+.env.*
+!.env.example
+/.claude/
+/.superpowers/
+/AGENTS.md
