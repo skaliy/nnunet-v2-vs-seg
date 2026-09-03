@@ -48,8 +48,8 @@ Case IDs must be unique, every image/mask pair must have matching geometry, and
 absolute or relative to `--source-root`.
 
 ```bash
-DATASET_ID=3
-DATASET=Dataset003_VSSegmentation
+DATASET_ID=1
+DATASET=Dataset001_VSSegmentation
 
 python training/prepare_dataset.py \
     --data-csv /path/to/ml_dataset.csv \
