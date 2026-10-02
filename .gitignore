@@ -50,6 +50,7 @@ venv/
 /nnunet_inference/integration/release_packages/
 /nnunet_inference/integration/_pkg/
 /nnunet_inference/integration/model/
+/nnunet_inference/integration/.bundle-stage-*/
 *.tar
 *.tar.gz
 *.tgz

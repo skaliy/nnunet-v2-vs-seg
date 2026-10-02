@@ -1,5 +1,6 @@
 # Build products must never enter a later Docker build context.
 release_packages/
+.bundle-stage-*/
 *.tar
 *.tar.gz
 *.sha256
@@ -16,4 +17,6 @@ smoke-test-output/
 build.sh
 smoke-test.sh
 validate_output.py
+release.py
+patch_regression.py
 README.md

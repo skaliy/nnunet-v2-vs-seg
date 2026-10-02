@@ -2,13 +2,21 @@
 """Validate the DICOM contract of a completed Research-PACS container run."""
 
 import argparse
+import csv
+import io
+import json
 from pathlib import Path
+import sys
+import zipfile
 
 import numpy as np
 from pydicom import dcmread
 from pydicom.uid import UID
 
-EXPECTED_OUTPUTS = ("fused", "fused_vote_map", "reports", "mask")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from nnunet_inference.redcap_output import FIELDS, _series, build_mask_payload, decode_mask, model_repeat_instance
+
+EXPECTED_OUTPUTS = ("fused", "fused_vote_map", "reports", "mask", "redcap")
 
 
 def _dicom_files(directory):
@@ -51,6 +59,10 @@ def validate(input_dir, output_dir):
         directory = Path(output_dir) / name
         if not directory.is_dir():
             raise RuntimeError(f"missing Research-PACS output directory: {directory}")
+        if name == "redcap":
+            continue
+        if name == "reports" and not any(directory.rglob("*")):
+            continue
         datasets = _read_series(directory, validate_derived=True)
         by_name[name] = datasets
         series = {str(dataset.SeriesInstanceUID) for dataset in datasets}
@@ -71,6 +83,8 @@ def validate(input_dir, output_dir):
         raise RuntimeError("derived DICOM UIDs collide with source UIDs")
 
     mask = by_name["mask"]
+    if "reports" not in by_name and any(np.any(d.pixel_array) for d in mask):
+        raise RuntimeError("Nonempty mask did not produce a report")
     if len(mask) != len(source):
         raise RuntimeError(f"mask slice count {len(mask)} != input {len(source)}")
     for dataset in mask:
@@ -85,8 +99,40 @@ def validate(input_dir, output_dir):
         if "model_version=" not in str(dataset.get("DerivationDescription", "")):
             raise RuntimeError("mask DerivationDescription lacks model identity")
 
+    paths = list((Path(output_dir) / "redcap").glob("*/output.json"))
+    if len(paths) != 1:
+        raise RuntimeError("Expected exactly one REDCap output.json")
+    rows = json.loads(paths[0].read_text())
+    values = {row["field_name"]: row["value"] for row in rows}
+    if len(rows) != len(FIELDS) or set(values) != set(FIELDS):
+        raise RuntimeError("Unexpected REDCap fields")
+    payload = json.loads(values["vs_mask_json"])
+    deployment = dict(model_type=values["vs_model_type"], bundle_sha256=values["vs_bundle_sha256"],
+                      members=[dict(member_id=m) for m in payload["model"]["member_ids"]])
+    if deployment["model_type"] != "nnunet_medium":
+        raise RuntimeError("Wrong REDCap model type")
+    instance = model_repeat_instance(deployment["bundle_sha256"])
+    if any(row["redcap_repeat_instance"] != instance or row["redcap_repeat_instrument"] != "pr2mask"
+           for row in rows):
+        raise RuntimeError("Incorrect REDCap model destination")
+    expected, _ = build_mask_payload(Path(output_dir) / "mask", input_dir, deployment,
+                                     version=values["vs_deployment_version"],
+                                     use_tta=values["vs_tta"] == "1")
+    np.testing.assert_array_equal(decode_mask(payload), decode_mask(expected))
+    for key in ("geometry", "source", "model", "mask_series_uid", "prediction_id"):
+        if payload[key] != expected[key]:
+            raise RuntimeError(f"REDCap payload differs from written DICOM: {key}")
+    if values["vs_prediction_id"] != expected["prediction_id"]:
+        raise RuntimeError("REDCap prediction identity differs")
+    if not isinstance(json.loads(values["vs_measurements_json"]), list):
+        raise RuntimeError("Invalid REDCap measurements list")
+    with zipfile.ZipFile(paths[0].with_name("output_data_dictionary.zip")) as archive:
+        dictionary = list(csv.DictReader(io.StringIO(archive.read("instrument.csv").decode("utf-8-sig"))))
+        if not set(FIELDS).issubset({row["Variable / Field Name"] for row in dictionary}):
+            raise RuntimeError("Missing REDCap dictionary fields")
+
     print(
-        "Research-PACS DICOM validation: OK "
+        "Research-PACS DICOM and lossless REDCap validation: OK "
         f"({len(output_series)} series, {len(output_sops)} instances)"
     )
 

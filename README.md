@@ -13,8 +13,9 @@ for the available CPU/CUDA hardware. Then install the project dependencies:
 
 ```bash
 python -m pip install \
-    nnunetv2==2.6.2 imagedata==3.8.14 SimpleITK==2.5.2 \
-    pydicom==2.4.4 pandas numpy scipy nibabel
+    nnunetv2==2.6.2 dynamic-network-architectures==0.4.2 \
+    imagedata==3.9.7 SimpleITK==2.5.2 \
+    pydicom==3.0.2 numpy==2.2.6 pandas scipy nibabel
 ```
 
 Cross-validation evaluation uses fastMONAI's VS metrics. Install the tested

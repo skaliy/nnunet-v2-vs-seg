@@ -137,7 +137,7 @@ def _validate_model_dir(model_dir, checkpoint_name, folds="auto"):
 
 def build_predictor(model_dir, device="auto",
                     checkpoint_name="checkpoint_final.pth", disable_tta=False,
-                    folds="auto"):
+                    folds="auto", parallel=False):
     """Construct an nnUNetPredictor initialised from a trained model folder
     using either ``fold_all`` or an ensemble of folds. ``folds="auto"`` detects
     a complete five-fold model before falling back to ``fold_all``. Mirrors
@@ -145,6 +145,13 @@ def build_predictor(model_dir, device="auto",
     """
     resolved_folds = _validate_model_dir(model_dir, checkpoint_name, folds)
     predictor_class = _load_predictor_class()
+    if parallel:
+        from .parallel import ParallelFoldMixin, assign_worker_cpus
+        if resolve_device(device).type != "cpu":
+            raise ValueError("Parallel fold inference requires CPU")
+        assign_worker_cpus(len(resolved_folds))
+        predictor_class = type("ParallelNNUNetPredictor",
+                               (ParallelFoldMixin, predictor_class), {})
     predictor = predictor_class(
         tile_step_size=0.5,
         use_gaussian=True,
@@ -155,8 +162,17 @@ def build_predictor(model_dir, device="auto",
         allow_tqdm=True,
     )
     predictor.initialize_from_trained_model_folder(
-        str(model_dir), use_folds=resolved_folds, checkpoint_name=checkpoint_name
+        str(model_dir), use_folds=resolved_folds[:1] if parallel else resolved_folds,
+        checkpoint_name=checkpoint_name
     )
+    if parallel:
+        predictor.parallel_folds = resolved_folds
+        predictor.parallel_model_dir = str(model_dir)
+        predictor.parallel_checkpoint_name = checkpoint_name
+        # The coordinator needs the plans and label manager; only workers use
+        # networks. Release its initial fold before launching five workers.
+        predictor.network = None
+        predictor.list_of_parameters = []
     return predictor
 
 
