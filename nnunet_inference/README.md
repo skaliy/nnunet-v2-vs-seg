@@ -18,6 +18,8 @@ python -m nnunet_inference /path/to/dicom [output_dir] \
 `mask/` and `vote_map/`. `--folds auto` accepts either `fold_all` or a complete
 `fold_0`–`fold_4` ensemble; select folds explicitly when both layouts exist.
 Mirror TTA is enabled by default and can be disabled with `--no-tta`.
+`--parallel-folds --device cpu` runs selected folds concurrently with three
+threads per fold; the PACS container uses this mode with all five folds.
 
 The pipeline reorients inputs to the LPS storage orientation used during
 training, predicts synchronously with nnU-Net, maps outputs back to the native
@@ -30,7 +32,11 @@ settings.
 - `predictor.py`: device, fold, model loading, and one-case nnU-Net prediction
 - `dicom_io.py`: orientation, resampling, DICOM writing, and UID provenance
 - `tests/`: unit tests and optional real-DICOM validation
-- `integration/`: fixed Research PACS container build and qualification
+- `parallel.py`: CPU fold workers and native ordered logit averaging
+- `deployment.py`: inference-only medium bundle staging and integrity checks
+- `pacs.py`: PACS/pr2mask orchestration and protected output publication
+- `redcap_output.py`: lossless masks and permanent model destinations
+- `integration/`: Research PACS build, release export and qualification
 
 ## Verify
 
@@ -43,4 +49,4 @@ NNUNET_MODEL_DIR=/path/to/trained-model \
 ```
 
 Medical images and models are intentionally excluded from Git. See
-[`integration/README.md`](integration/README.md) for the PACS container.
+[`integration/README.md`](integration/README.md) for the curated ResEnc-M five-fold PACS container, CPU limits, REDCap export and release qualification.

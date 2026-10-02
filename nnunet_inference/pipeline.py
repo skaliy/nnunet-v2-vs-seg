@@ -12,6 +12,7 @@ DICOM series with deterministic numeric Series and SOP Instance UIDs.
 import argparse
 import hashlib
 import importlib.metadata
+import json
 import tempfile
 from pathlib import Path
 
@@ -62,7 +63,8 @@ def _resolve_model_version(model_dir, checkpoint_name, folds):
 
 
 def run_inference(input_dir, output_dir=None, *, model_dir, device="auto",
-                  checkpoint="final", disable_tta=False, folds="auto"):
+                  checkpoint="final", disable_tta=False, folds="auto",
+                  parallel=False, deployment_version=None):
     """Full DICOM -> nnU-Net -> DICOM pipeline. Returns a summary dict.
 
     `output_dir` defaults to the input series' parent folder, so `mask/` and
@@ -73,6 +75,9 @@ def run_inference(input_dir, output_dir=None, *, model_dir, device="auto",
     if not input_dir.is_dir():
         raise NotADirectoryError(f"input_dir does not exist: {input_dir}")
     output_dir = Path(output_dir) if output_dir is not None else input_dir.parent
+    for name in ("mask", "vote_map"):
+        if (output_dir / name).exists() or (output_dir / name).is_symlink():
+            raise RuntimeError(f"Owned output directory already exists: {output_dir / name}")
     model_dir = Path(model_dir)
     checkpoint_name = CHECKPOINTS[checkpoint]
     resolved_folds = resolve_folds(model_dir, checkpoint_name, folds)
@@ -94,7 +99,9 @@ def run_inference(input_dir, output_dir=None, *, model_dir, device="auto",
             "nnU-Net model",
         )
         dataset_id = dataset_dir.split("_", 1)[0]
-        model_name = f"ResEnc-L {dataset_id}"
+        plans = json.loads((model_dir / "plans.json").read_text())
+        plan_name = plans.get("plans_name", "nnU-Net")
+        model_name = f"{plan_name} {dataset_id}"
         if resolved_folds != ("all",):
             model_name += " folds " + ",".join(
                 str(fold) for fold in resolved_folds
@@ -109,6 +116,8 @@ def run_inference(input_dir, output_dir=None, *, model_dir, device="auto",
         folds=resolved_folds,
         tta=not disable_tta,
     )
+    if deployment_version:
+        uid_context["deployment_version"] = str(deployment_version)
 
     fold_label = "fold_all" if resolved_folds == ("all",) else ",".join(
         str(fold) for fold in resolved_folds
@@ -118,7 +127,7 @@ def run_inference(input_dir, output_dir=None, *, model_dir, device="auto",
 
     predictor = build_predictor(
         model_dir, device=device, checkpoint_name=checkpoint_name,
-        disable_tta=disable_tta, folds=resolved_folds,
+        disable_tta=disable_tta, folds=resolved_folds, parallel=parallel,
     )
     series = dicom_io.read_series(input_dir)
 
@@ -200,6 +209,8 @@ def parse_args(argv=None):
     )
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--checkpoint", choices=["final", "best"], default="final")
+    parser.add_argument("--parallel-folds", action="store_true",
+                        help="Run CPU folds concurrently with three threads per fold")
     parser.add_argument(
         "--folds", default="auto", metavar="FOLDS",
         help="Model folds: auto, all, or comma-separated integers such as "
@@ -223,7 +234,7 @@ def main(argv=None):
     run_inference(
         args.input_dir, args.output_dir, model_dir=args.model_dir,
         device=args.device, checkpoint=args.checkpoint,
-        disable_tta=args.disable_tta, folds=args.folds,
+        disable_tta=args.disable_tta, folds=args.folds, parallel=args.parallel_folds,
     )
 
 

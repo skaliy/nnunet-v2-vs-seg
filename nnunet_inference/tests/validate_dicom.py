@@ -1,25 +1,12 @@
 #!/usr/bin/env python3
-"""End-to-end validation for the nnU-Net DICOM inference tool.
+"""Validate DICOM geometry, values, identities and model provenance after inference.
 
-Validates that, given a DICOM series in the research-PACS format, the tool
-produces a valid, PACS-ready round-trip: two derived DICOM series (mask +
-vote_map) whose geometry matches the input and whose UIDs are correctly
-derived so PACS accepts them as new derived objects.
-
-The HARD gates are all DICOM-tool concerns (geometry, value ranges, UID
-derivation) — they must pass. Segmentation *content* (how many tumor voxels
-the model finds) is a property of the trained model, not the tool, so it is
-reported as INFORMATION, not asserted: real research-PACS inputs include scans
-the model legitimately segments as empty (e.g. small/atypical tumours), and
-that must not fail the DICOM round-trip.
+Tumor voxel counts are informational: an empty binary mask is a valid output.
+Orientation correctness is checked separately by test_dicom_io's marker tests.
 
     NNUNET_DICOM_FIXTURE=/path/to/dicom-series \
     NNUNET_MODEL_DIR=/path/to/trained-model \
         python -m nnunet_inference.tests.validate_dicom
-
-Orientation correctness is independently proven, model-free, by the marker
-round-trip in test_dicom_io.TestOutputBridge and by byte-identity with the
-nnUNetv2_predict CLI (see nnunet_inference/README.md).
 """
 import os
 from pathlib import Path
@@ -148,16 +135,8 @@ def main():
     print(f"  provenance: mask SoftwareVersions = {mask_sv_str!r}")
     print(f"  imagetype:  mask ImageType = {mask_it!r}")
 
-    # ---- HARD gate 4: the tool actually segments this scan ----
-    # With correct input reorientation (native -> LPS) the model segments this
-    # sagittal MPRAGE. An empty mask here means the orientation handling has
-    # regressed: nnU-Net ignores the direction matrix, so a non-axial scan fed
-    # in its native orientation is silently segmented as empty.
+    # Report prediction content without imposing a nonempty-mask requirement.
     tv, pct = summary["tumor_voxels"], summary["tumor_pct"]
-    assert tv > 0, (
-        "empty segmentation — input orientation handling has regressed "
-        "(non-axial scan must be reoriented to LPS for nnU-Net)"
-    )
     print(f"\nMODEL SEGMENTATION: tumor voxels {tv} ({pct:.4f}%)")
 
     # ---- overlay PNG at the slice with the most tumor ----

@@ -36,7 +36,7 @@ NNUNET_ORIENTATION = "LPS"
 DICOM_UID_FORMAT_VERSION = 1
 DICOM_UID_ROOT = "2.25"
 DICOM_UID_NAMESPACE = "bb88c59d-5a75-5f47-bb52-3bc9f6db7808"
-DICOM_MODEL_CODE = 1                 # nnU-Net VS ResEnc-L
+DICOM_MODEL_CODE = 1                 # permanent nnU-Net VS family namespace
 DICOM_DEPLOYMENT_CODE = 1            # nnU-Net fold ensemble/single-fold runtime
 DICOM_OUTPUT_CODES = {
     "segmentation": 1,
@@ -293,7 +293,12 @@ def prob_npz_to_nifti(npz_path, seg_nifti_path, out_nifti_path, fg_channel=1):
     same spatial axis order as the seg array. Geometry is copied from the seg
     NIfTI so the probability NIfTI is grid-identical to the segmentation.
     """
-    prob = np.load(str(npz_path))["probabilities"]
+    with np.load(str(npz_path), allow_pickle=False) as archive:
+        prob = archive["probabilities"]
+    if (prob.ndim != 4 or prob.shape[0] != 2 or not np.isfinite(prob).all()
+            or prob.min() < 0 or prob.max() > 1
+            or not np.allclose(prob.sum(axis=0), 1, atol=2e-3)):
+        raise ValueError("Expected finite, normalized two-class probabilities")
     fg = np.ascontiguousarray(prob[fg_channel].astype(np.float32))  # (z, y, x)
     seg_img = sitk.ReadImage(str(seg_nifti_path))
     prob_img = sitk.GetImageFromArray(fg)

@@ -226,6 +226,7 @@ class TestProbNpzToNifti(unittest.TestCase):
         prob[0] = 0.3                       # background channel
         prob[1] = np.linspace(0, 1, int(np.prod(shape)),
                               dtype=np.float32).reshape(shape)  # foreground
+        prob[0] = 1 - prob[1]
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             seg_img = sitk.GetImageFromArray(seg)
