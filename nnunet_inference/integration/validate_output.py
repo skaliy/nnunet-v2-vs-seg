@@ -16,7 +16,7 @@ from pydicom.uid import UID
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from nnunet_inference.redcap_output import FIELDS, _series, build_mask_payload, decode_mask, model_repeat_instance
 
-EXPECTED_OUTPUTS = ("fused", "fused_vote_map", "reports", "mask", "redcap")
+EXPECTED_OUTPUTS = ("fused", "fused_vote_map", "reports", "labels", "redcap")
 
 
 def _dicom_files(directory):
@@ -82,7 +82,10 @@ def validate(input_dir, output_dir):
     if output_series.intersection(source_series) or output_sops.intersection(source_sops):
         raise RuntimeError("derived DICOM UIDs collide with source UIDs")
 
-    mask = by_name["mask"]
+    mask = by_name["labels"]
+    fused_study_ids = {str(d.get("StudyID", "")) for d in by_name["fused"]}
+    if {str(d.get("StudyID", "")) for d in mask} != fused_study_ids:
+        raise RuntimeError("mask StudyID differs from fused; the PACS would file them apart")
     if "reports" not in by_name and any(np.any(d.pixel_array) for d in mask):
         raise RuntimeError("Nonempty mask did not produce a report")
     if len(mask) != len(source):
@@ -115,7 +118,7 @@ def validate(input_dir, output_dir):
     if any(row["redcap_repeat_instance"] != instance or row["redcap_repeat_instrument"] != "pr2mask"
            for row in rows):
         raise RuntimeError("Incorrect REDCap model destination")
-    expected, _ = build_mask_payload(Path(output_dir) / "mask", input_dir, deployment,
+    expected, _ = build_mask_payload(Path(output_dir) / "labels", input_dir, deployment,
                                      version=values["vs_deployment_version"],
                                      use_tta=values["vs_tta"] == "1")
     np.testing.assert_array_equal(decode_mask(payload), decode_mask(expected))

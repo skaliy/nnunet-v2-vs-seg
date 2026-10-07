@@ -48,11 +48,14 @@ The image verifies files and pinned model runtime versions. Builds pull the
 current Fiona base, resolve it to an immutable digest and record that digest.
 
 Before preparing a release with changed weights or checkpoint selection,
-allocate its bundle SHA-256 an unused permanent REDCap instance in
-`../redcap_model_instances.json`. Unknown bundles fail closed. Never renumber
-existing allocations: fastMONAI UNet is 1, DynUNet is 2, and the initial
-curated medium nnUNet fold-best bundle is **3**. Preserve these allocations
-across the projects when adding future releases.
+allocate its bundle SHA-256 an unused permanent REDCap instance of at least
+2 in `../redcap_model_instances.json`. Instance 1 of the `pr2mask` instrument
+holds the original (manual) mask, and REDCap instances are filled in order, so
+model instances follow it without gaps. Unknown bundles and instance 1 fail
+closed. Never renumber existing allocations: fastMONAI UNet is 2, DynUNet is 3,
+4 is reserved for the next fastMONAI model, and the initial curated medium
+nnUNet fold-best bundle is **5**. Preserve these allocations across the
+projects when adding future releases.
 
 ## CPU and memory contract
 
@@ -82,15 +85,20 @@ launcher; memory limits cannot be encoded in a Dockerfile.
 fastMONAI. `{"tta":false}` disables mirror TTA. Unknown keys, other model
 types, and string/numeric TTA values are rejected before inference.
 
-The container returns `mask`, `fused`, `fused_vote_map`, `reports`, `redcap`,
-`pacs_command.log` and `runtime_resources.json`. `vote_map` is intermediate.
+The container returns `labels`, `fused`, `fused_vote_map`, `reports`, `redcap`,
+`pacs_command.log` and `runtime_resources.json`. The nnU-Net `mask` and `vote_map`
+series are intermediate pr2mask inputs. pr2mask writes its own mask series to
+`labels/`, using its folder layout; nnU-Net provenance (SeriesDescription,
+SoftwareVersions, DerivationDescription and a `MASK` ImageType value) is copied
+onto it before publication. Its study identity, window and UIDs stay as pr2mask
+wrote them, so the PACS files the mask with the other pr2mask outputs.
 Vote-map intensities are `round(probability * 65535)`. Empty masks may produce
 an empty `reports` directory. Existing owned output directories are rejected.
 Derived DICOM UIDs bind source geometry/identities, model content, checkpoint,
 folds, TTA and release version. pr2mask identities also distinguish nnUNet
 from fastMONAI bundles. Temporary inference products are removed after use.
 
-`redcap/<report-series-UID>/output.json` contains the same fields as fastMONAI:
+`redcap/<mask-series-UID>/output.json` contains the same fields as fastMONAI:
 `vs_mask_json`, `vs_measurements_json`, model/bundle/prediction identity,
 deployment version, TTA and creation time. The lossless mask uses schema 1,
 bit-packing, gzip and Base64; geometry is DICOM LPS with lengths in millimetres

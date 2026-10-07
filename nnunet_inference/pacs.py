@@ -9,10 +9,11 @@ import subprocess
 import tempfile
 
 from .deployment import MODEL_TYPE, validate_deployment
+from .dicom_io import tag_pr2mask_mask
 from .pipeline import run_inference
 from .redcap_output import _series, model_repeat_instance, write_redcap_mask
 
-FINAL_OUTPUTS = ("mask", "fused", "fused_vote_map", "reports", "redcap")
+FINAL_OUTPUTS = ("labels", "fused", "fused_vote_map", "reports", "redcap")
 LOG_NAME = "pacs_command.log"
 
 
@@ -71,6 +72,13 @@ def postprocess(input_dir, work_dir, output_dir, deployment, *, version,
     with log_path.open("w") as log:
         for command in commands:
             subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
+    # pr2mask's labels/ series is the published mask; it only gets our provenance.
+    labels = sorted(path for path in (work_dir / "labels").glob("*") if path.is_dir())
+    if len(labels) != 1:
+        raise RuntimeError(
+            f"pr2mask must create exactly one mask series in {work_dir / 'labels'}; "
+            f"found {len(labels)}")
+    tag_pr2mask_mask(labels[0], work_dir / "mask")
     write_redcap_mask(work_dir, input_dir, deployment, version=version, use_tta=use_tta)
     missing = [n for n in FINAL_OUTPUTS if not (work_dir / n).is_dir()]
     if missing:

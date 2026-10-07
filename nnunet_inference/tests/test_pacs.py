@@ -21,7 +21,7 @@ class PacsTests(unittest.TestCase):
 
     def test_postprocessing_exports_all_five_products_with_distinct_identity(self):
         registry = json.loads(MODEL_INSTANCES_PATH.read_text())
-        medium = next(digest for digest, n in registry.items() if n == 3)
+        medium = next(digest for digest, n in registry.items() if n == 5)
         deployment = dict(model_type="nnunet_medium", model_name="Medium", bundle_sha256=medium,
                           members=[dict(member_id=f"fold_{n}") for n in range(5)])
         with tempfile.TemporaryDirectory() as tmp:
@@ -31,17 +31,43 @@ class PacsTests(unittest.TestCase):
                 (work / name).mkdir()
             output = root / "output"
             output.mkdir()
-            with patch.object(pacs.subprocess, "run") as run:
+            with patch.object(pacs.subprocess, "run") as run, \
+                    patch.object(pacs, "tag_pr2mask_mask") as tag_mask:
                 pacs.postprocess(source, work, output, deployment, version="test",
                                  use_tta=True, pr2mask_dir=Path("/pr2mask"))
+            tag_mask.assert_called_once_with(work / "labels" / "1.2.8", work / "mask")
             self.assertEqual(run.call_count, 3)
             for call in run.call_args_list:
                 command = call.args[0]
                 self.assertIn("test_nn_m1_b" + medium[:32] + "_t1", command)
             self.assertEqual({p.name for p in output.iterdir()}, set(pacs.FINAL_OUTPUTS) | {pacs.LOG_NAME})
             rows = json.loads(next((output / "redcap").glob("*/output.json")).read_text())
-            self.assertTrue(all(r["redcap_repeat_instance"] == "3" for r in rows))
+            self.assertTrue(all(r["redcap_repeat_instance"] == "5" for r in rows))
+            self.assertEqual(len(list((output / "labels" / "1.2.8").iterdir())), 3)
             self.assertFalse((output / "vote_map").exists())
+            self.assertFalse((output / "mask").exists())
+
+    def test_postprocessing_requires_exactly_one_pr2mask_mask_series(self):
+        deployment = dict(model_name="Medium", bundle_sha256="a" * 64)
+        for extra in (None, "1.2.99"):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source, work, *_ = fixture(root)
+                if extra is None:
+                    for path in (work / "labels" / "1.2.8").iterdir():
+                        path.unlink()
+                    (work / "labels" / "1.2.8").rmdir()
+                else:
+                    (work / "labels" / extra).mkdir()
+                output = root / "output"
+                output.mkdir()
+                with patch.object(pacs.subprocess, "run"), \
+                        patch.object(pacs, "tag_pr2mask_mask") as tag_mask:
+                    with self.assertRaisesRegex(RuntimeError, "exactly one mask series"):
+                        pacs.postprocess(source, work, output, deployment, version="test",
+                                         use_tta=True, pr2mask_dir=Path("/pr2mask"))
+                tag_mask.assert_not_called()
+                self.assertFalse(any(output.iterdir()))
 
     def test_failed_postprocessing_does_not_publish_products(self):
         with tempfile.TemporaryDirectory() as tmp:

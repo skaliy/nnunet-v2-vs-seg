@@ -37,7 +37,7 @@ docker run --rm \\
   {image_tag}
 ```
 
-Use a fresh output folder. Outputs: `mask`, `fused`, `fused_vote_map`,
+Use a fresh output folder. Outputs: `labels` (the mask), `fused`, `fused_vote_map`,
 `reports` and `redcap`; reports may be empty for an empty mask.
 
 ## REDCap

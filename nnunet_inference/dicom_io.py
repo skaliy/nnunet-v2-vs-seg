@@ -285,6 +285,33 @@ def write_prob_dicom(prob_nifti, template_dir, out_dir, uid_context,
         software_versions=software_versions,
     )
 
+PROVENANCE_KEYWORDS = ("SoftwareVersions", "SeriesDescription", "DerivationDescription")
+
+
+def tag_pr2mask_mask(series_dir, provenance_dir):
+    """Copy nnU-Net provenance from our mask series onto pr2mask's mask series.
+
+    Study identity, window, UIDs and pixels are left as pr2mask wrote them.
+    """
+    provenance_paths = sorted(p for p in Path(provenance_dir).iterdir() if p.is_file())
+    paths = sorted(p for p in Path(series_dir).iterdir() if p.is_file())
+    if not provenance_paths:
+        raise RuntimeError(f"nnU-Net mask series is empty: {provenance_dir}")
+    if not paths:
+        raise RuntimeError(f"pr2mask mask series is empty: {series_dir}")
+    reference = dcmread(str(provenance_paths[0]), stop_before_pixels=True)
+    missing = [keyword for keyword in PROVENANCE_KEYWORDS if keyword not in reference]
+    if missing:
+        raise RuntimeError(f"nnU-Net mask series lacks provenance: {missing}")
+    for path in paths:
+        dataset = dcmread(str(path))
+        for keyword in PROVENANCE_KEYWORDS:
+            setattr(dataset, keyword, reference.get(keyword))
+        image_type = list(dataset.get("ImageType") or [])
+        dataset.ImageType = image_type + ["MASK"]
+        dataset.save_as(str(path))
+
+
 def prob_npz_to_nifti(npz_path, seg_nifti_path, out_nifti_path, fg_channel=1):
     """Extract the foreground softmax from nnU-Net's .npz and save it as a NIfTI
     that carries the segmentation NIfTI's geometry.

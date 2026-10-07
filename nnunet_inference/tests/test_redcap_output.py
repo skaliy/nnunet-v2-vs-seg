@@ -23,7 +23,7 @@ DEPLOYMENT = {'model_type': 'unet', 'bundle_sha256': '4d8991eff16c90ad0eb185757d
 def fixture(root, empty=False):
     source, work = root/'source', root/'work'
     source.mkdir()
-    (work/'mask').mkdir(parents=True)
+    (work/'labels'/'1.2.8').mkdir(parents=True)
     mask = np.zeros((3, 2, 3), dtype=np.uint16)
     if not empty:
         mask[0, 0, 2] = mask[2, 1, 0] = 1
@@ -32,7 +32,7 @@ def fixture(root, empty=False):
         kwargs = dict(orientation=(0, 1, 0, 0, 0, 1), pixel_spacing=(.7, .9), position=(offset, 12, 31))
         p = _write_test_image(source/f'{2-i}', i, **kwargs)
         d = dcmread(p); d.PatientID = 'SYNTHETIC'; d.ReferringPhysicianName = 'EventName:test_arm_1'; d.save_as(p)
-        p = _write_test_image(work/'mask'/f'{2-i}', i, series_uid='1.2.8', sop_uid=f'1.2.8.{i+1}', **kwargs)
+        p = _write_test_image(work/'labels'/'1.2.8'/f'{2-i}', i, series_uid='1.2.8', sop_uid=f'1.2.8.{i+1}', **kwargs)
         d = dcmread(p); d.PixelData = mask[i].astype('<u2').tobytes(); d.save_as(p)
     report = work/'redcap'/'1.2.9'
     report.mkdir(parents=True)
@@ -83,15 +83,15 @@ class DicomExportTests(unittest.TestCase):
             self.assertEqual(payload['source']['sop_instance_uids'], ['1.2.3.4.1','1.2.3.4.2','1.2.3.4.3'])
             self.assertEqual(payload['model']['bundle_sha256'], DEPLOYMENT['bundle_sha256'])
             self.assertEqual(values['vs_prediction_id'], payload['prediction_id'])
-            self.assertTrue(all(r['redcap_repeat_instance']=='1' for r in rows))
+            self.assertTrue(all(r['redcap_repeat_instance']=='2' for r in rows))
             with zipfile.ZipFile(report/'output_data_dictionary.zip') as z:
                 self.assertEqual(z.read('OriginID.txt'), b'PR2MASK')
                 fields = {r['Variable / Field Name']: r for r in csv.DictReader(io.StringIO(z.read('instrument.csv').decode()))}
                 self.assertEqual(fields['vs_mask_json']['Field Type'], 'notes')
                 self.assertIn('physical_size', fields)
-            again, _ = build_mask_payload(work/'mask', source, DEPLOYMENT, version='test', use_tta=True)
+            again, _ = build_mask_payload(work/'labels'/'1.2.8', source, DEPLOYMENT, version='test', use_tta=True)
             self.assertEqual(again['prediction_id'], payload['prediction_id'])
-            changed, _ = build_mask_payload(work/'mask', source, DEPLOYMENT, version='test', use_tta=False)
+            changed, _ = build_mask_payload(work/'labels'/'1.2.8', source, DEPLOYMENT, version='test', use_tta=False)
             self.assertNotEqual(changed['prediction_id'], payload['prediction_id'])
 
     def test_empty_mask_and_no_measurements(self):
@@ -118,37 +118,39 @@ class DicomExportTests(unittest.TestCase):
         by_instance = {}
         for key, value in stored.items():
             by_instance.setdefault(key[3], {})[key[4]] = value
-        self.assertEqual(set(by_instance), {'1', '2'})
-        self.assertEqual(by_instance['1']['vs_tta'], '0')
-        self.assertEqual(by_instance['1']['vs_deployment_version'], 'v2')
-        self.assertEqual(json.loads(by_instance['1']['vs_measurements_json']), [])
-        self.assertEqual(json.loads(by_instance['1']['vs_mask_json'])['foreground_voxels'], 0)
-        self.assertEqual(by_instance['2']['vs_tta'], '1')
-        self.assertTrue(json.loads(by_instance['2']['vs_measurements_json']))
+        self.assertEqual(set(by_instance), {'2', '3'})
+        self.assertEqual(by_instance['2']['vs_tta'], '0')
+        self.assertEqual(by_instance['2']['vs_deployment_version'], 'v2')
+        self.assertEqual(json.loads(by_instance['2']['vs_measurements_json']), [])
+        self.assertEqual(json.loads(by_instance['2']['vs_mask_json'])['foreground_voxels'], 0)
+        self.assertEqual(by_instance['3']['vs_tta'], '1')
+        self.assertTrue(json.loads(by_instance['3']['vs_measurements_json']))
 
     def test_unknown_and_colliding_registry_entries_are_rejected(self):
         with self.assertRaisesRegex(ValueError, 'Unregistered'):
             model_repeat_instance('f'*64)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'registry.json'
-            path.write_text(json.dumps({'a'*64: 1, 'b'*64: 1}))
-            with patch.object(redcap_output, 'MODEL_INSTANCES_PATH', path):
-                with self.assertRaisesRegex(ValueError, 'Invalid'):
-                    model_repeat_instance('a'*64)
+            for registry in ({'a'*64: 2, 'b'*64: 2}, {'a'*64: 1}):
+                with self.subTest(registry=registry):
+                    path.write_text(json.dumps(registry))
+                    with patch.object(redcap_output, 'MODEL_INSTANCES_PATH', path):
+                        with self.assertRaisesRegex(ValueError, 'Invalid'):
+                            model_repeat_instance('a'*64)
 
     def test_geometry_mismatch_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, work, *_ = fixture(Path(tmp))
-            p = work/'mask'/'0'; d = dcmread(p); d.ImagePositionPatient = [6,12,31]; d.save_as(p)
+            p = work/'labels'/'1.2.8'/'0'; d = dcmread(p); d.ImagePositionPatient = [6,12,31]; d.save_as(p)
             with self.assertRaisesRegex(ValueError, 'geometry differ'):
-                build_mask_payload(work/'mask', source, DEPLOYMENT, version='test', use_tta=True)
+                build_mask_payload(work/'labels'/'1.2.8', source, DEPLOYMENT, version='test', use_tta=True)
 
     def test_duplicate_slice_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, work, *_ = fixture(Path(tmp))
-            p = work/'mask'/'0'; d = dcmread(p); d.ImagePositionPatient = [2,12,31]; d.save_as(p)
+            p = work/'labels'/'1.2.8'/'0'; d = dcmread(p); d.ImagePositionPatient = [2,12,31]; d.save_as(p)
             with self.assertRaisesRegex(ValueError, 'Duplicate slice'):
-                build_mask_payload(work/'mask', source, DEPLOYMENT, version='test', use_tta=True)
+                build_mask_payload(work/'labels'/'1.2.8', source, DEPLOYMENT, version='test', use_tta=True)
 
 
 if __name__ == '__main__': unittest.main()

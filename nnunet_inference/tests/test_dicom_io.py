@@ -10,6 +10,7 @@ import SimpleITK as sitk
 from pydicom.uid import UID
 
 from nnunet_inference import dicom_io
+from nnunet_inference.tests.synthetic import write_image
 
 DEFAULT_FIXTURE = Path(__file__).resolve().parent / "dicom_input"
 FIXTURE = Path(os.environ.get("NNUNET_DICOM_FIXTURE", DEFAULT_FIXTURE))
@@ -215,6 +216,66 @@ class TestOutputBridge(unittest.TestCase):
             self.assertIn("stored uint16 value / 65535", ds2.DerivationDescription)
             self.assertNotIn("RescaleSlope", ds2)
             self.assertNotIn("RescaleIntercept", ds2)
+
+
+class TestTagPr2maskMask(unittest.TestCase):
+    def write_series(self, directory, series_uid, *, pixels=None, **tags):
+        for index in range(2):
+            path = write_image(Path(directory) / f"{index}.dcm", index,
+                               series_uid=series_uid,
+                               sop_uid=f"{series_uid}.{index + 1}", pixels=pixels)
+            dataset = pydicom.dcmread(str(path))
+            for keyword, value in tags.items():
+                setattr(dataset, keyword, value)
+            dataset.save_as(str(path))
+
+    def test_copies_nnunet_provenance_and_keeps_pr2mask_identity(self):
+        mask_pixels = np.array([[0, 1, 0], [1, 0, 0]])
+        with tempfile.TemporaryDirectory() as tmp:
+            ours, labels = Path(tmp) / "mask", Path(tmp) / "labels"
+            self.write_series(
+                ours, "2.25.1",
+                SoftwareVersions=["Medium", "abcd1234", "nnUNetv2 2.6.2"],
+                SeriesDescription="nnU-Net Medium segmentation mask",
+                DerivationDescription="nnU-Net segmentation mask; model_version=abc",
+                ImageType=["DERIVED", "SECONDARY", "M", "ND", "MASK"])
+            self.write_series(
+                labels, "1.3.6.1.4.1.45037.1", pixels=mask_pixels,
+                StudyID="1.2.3", WindowCenter="0.5", WindowWidth="1",
+                SoftwareVersions="syngo MR A35",
+                SeriesDescription="t1_mpr_ns_sag (mask)",
+                ImageType=["DERIVED", "SECONDARY", "OTHER"])
+
+            dicom_io.tag_pr2mask_mask(labels, ours)
+            written = [pydicom.dcmread(str(path)) for path in sorted(labels.iterdir())]
+
+        self.assertEqual(len(written), 2)
+        for index, dataset in enumerate(written):
+            self.assertEqual(list(dataset.SoftwareVersions),
+                             ["Medium", "abcd1234", "nnUNetv2 2.6.2"])
+            self.assertEqual(dataset.SeriesDescription, "nnU-Net Medium segmentation mask")
+            self.assertIn("model_version=abc", dataset.DerivationDescription)
+            self.assertEqual(list(dataset.ImageType),
+                             ["DERIVED", "SECONDARY", "OTHER", "MASK"])
+            self.assertEqual(str(dataset.StudyID), "1.2.3")
+            self.assertEqual(float(dataset.WindowCenter), 0.5)
+            self.assertEqual(float(dataset.WindowWidth), 1.0)
+            self.assertEqual(str(dataset.SeriesInstanceUID), "1.3.6.1.4.1.45037.1")
+            self.assertEqual(str(dataset.SOPInstanceUID), f"1.3.6.1.4.1.45037.1.{index + 1}")
+            np.testing.assert_array_equal(dataset.pixel_array, mask_pixels)
+
+    def test_missing_provenance_or_empty_series_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ours, labels, empty = Path(tmp) / "mask", Path(tmp) / "labels", Path(tmp) / "empty"
+            empty.mkdir()
+            self.write_series(ours, "2.25.1", SeriesDescription="nnU-Net mask")
+            self.write_series(labels, "1.3.6.1.4.1.45037.1")
+            with self.assertRaisesRegex(RuntimeError, "lacks provenance"):
+                dicom_io.tag_pr2mask_mask(labels, ours)
+            with self.assertRaisesRegex(RuntimeError, "pr2mask mask series is empty"):
+                dicom_io.tag_pr2mask_mask(empty, ours)
+            with self.assertRaisesRegex(RuntimeError, "nnU-Net mask series is empty"):
+                dicom_io.tag_pr2mask_mask(labels, empty)
 
 
 class TestProbNpzToNifti(unittest.TestCase):

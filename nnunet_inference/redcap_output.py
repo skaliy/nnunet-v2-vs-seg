@@ -23,6 +23,9 @@ from pydicom.misc import is_dicom
 ENCODING = 'packbits-gzip-base64-v1'
 MAX_VOXELS = 256 * 1024 * 1024
 MODEL_INSTANCES_PATH = Path(__file__).with_name('redcap_model_instances.json')
+# Instance 1 of the pr2mask instrument holds the original (manual) mask, so model
+# instances start at 2. REDCap users fill instances in order, so keep them consecutive.
+FIRST_MODEL_INSTANCE = 2
 
 
 def model_repeat_instance(bundle_sha256):
@@ -30,7 +33,8 @@ def model_repeat_instance(bundle_sha256):
     registry = json.loads(MODEL_INSTANCES_PATH.read_text())
     if (not isinstance(registry, dict)
             or any(len(key) != 64 or any(c not in '0123456789abcdef' for c in key) for key in registry)
-            or any(type(n) is not int or not 1 <= n <= 2147483647 for n in registry.values())
+            or any(type(n) is not int or not FIRST_MODEL_INSTANCE <= n <= 2147483647
+                   for n in registry.values())
             or len(set(registry.values())) != len(registry)):
         raise ValueError('Invalid REDCap model-instance registry')
     if bundle_sha256 not in registry:
@@ -205,7 +209,7 @@ def write_redcap_mask(work_dir, input_dir, deployment, *, version, use_tta):
     rows = json.loads(path.read_text())
     if not isinstance(rows, list):
         raise ValueError('Expected pr2mask EAV rows')
-    payload, source = build_mask_payload(work_dir / 'mask', input_dir, deployment,
+    payload, source = build_mask_payload(work_dir / 'labels', input_dir, deployment,
                                          version=version, use_tta=use_tta)
     destination = dict(record_id=str(source.get('PatientID', '')).rstrip(),
                        redcap_event_name=str(source.get('ReferringPhysicianName', '')).removeprefix('EventName:'),
