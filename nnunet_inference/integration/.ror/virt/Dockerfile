@@ -25,10 +25,13 @@ RUN conda env create -f /app/requirements.yml && \
 # Required immutable release identity. Declared after the dependency layer so a
 # new release version does not rebuild the environment.
 ARG VERSION
+ARG IMAGE_NAME=nnunet-vsseg-5fold
 RUN test -n "${VERSION}" || \
     (echo "VERSION build argument is required" >&2; exit 1)
 LABEL org.opencontainers.image.version="${VERSION}"
 ENV VERSION=${VERSION}
+# pr2mask records this as the container version in its DICOM SoftwareVersions.
+ENV CONTAINER_VERSION=${IMAGE_NAME}:${VERSION}
 
 # Keep the environment active for interactive debugging as well as ENTRYPOINT.
 RUN echo "conda activate ${conda_env}" >> /root/.bashrc

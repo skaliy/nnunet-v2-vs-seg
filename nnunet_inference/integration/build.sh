@@ -46,7 +46,8 @@ fi
 docker pull "${BASE_IMAGE}"
 BASE_REF="$(docker image inspect "${BASE_IMAGE}" --format '{{index .RepoDigests 0}}')"
 test -n "${BASE_REF}"
-docker build --pull --build-arg "VERSION=${VERSION}" --build-arg "FIONA_BASE=${BASE_REF}" \
+docker build --pull --build-arg "VERSION=${VERSION}" --build-arg "IMAGE_NAME=${IMAGE_NAME}" \
+    --build-arg "FIONA_BASE=${BASE_REF}" \
     -f .ror/virt/Dockerfile -t "${DATED_TAG}" -t "${IMAGE_NAME}:latest" .
 docker run --rm --network none --entrypoint /bin/bash "${DATED_TAG}" -lc \
     'set -e

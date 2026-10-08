@@ -15,6 +15,9 @@ from .redcap_output import _series, model_repeat_instance, write_redcap_mask
 
 FINAL_OUTPUTS = ("labels", "fused", "fused_vote_map", "reports", "redcap")
 LOG_NAME = "pacs_command.log"
+# pr2mask fits about 40 title characters on a fused image, so long model types
+# get a shorter visible label.
+TITLE_LABELS = {"nnunet_medium": "nnunet_m"}
 
 
 def configure_cpu():
@@ -56,17 +59,22 @@ def validate_input(input_dir):
 
 def postprocess(input_dir, work_dir, output_dir, deployment, *, version,
                 use_tta, pr2mask_dir):
-    identity = f"{version}_nn_m1_b{deployment['bundle_sha256'][:32]}_t{int(use_tta)}"
-    info = f"{deployment['model_name']}, Predicted {datetime.now():%b%d%Y}"
+    # The image version pins the bundle, so version, model and TTA keep pr2mask's
+    # stable series UIDs distinct.
+    tta = "tta" if use_tta else "no-tta"
+    identity = f"{version}_{deployment['model_type']}_{tta}"
+    report_identity = f"{version}_{tta}"  # the report title already names the model
+    label = TITLE_LABELS.get(deployment["model_type"], deployment["model_type"])
+    info = f"{label} {len(deployment['members'])}-model ensemble, {datetime.now():%b%d%Y}"
     common = [str(input_dir), str(work_dir / "mask"), str(work_dir)]
     commands = [
         [str(pr2mask_dir / "imageAndMask2Report"), *common, "-u", identity + "_report",
-         "-i", identity, "--reporttype", "mosaic", "-t", info + " "],
+         "-i", report_identity, "--reporttype", "mosaic", "-t", info + " "],
         [str(pr2mask_dir / "imageAndMask2Fused"), *common,
-         "-u", identity + "_fused", "-i", identity],
+         "-u", identity + "_fused", "-t", info + " "],
         [str(pr2mask_dir / "imageAndMask2Fused"), str(input_dir), str(work_dir / "vote_map"),
          str(work_dir), "--votemapmax", "65535", "--votemapagree", "0.5",
-         "-u", identity + "_votemap", "-s", "peak agreement {peak_agreement}", "-i", identity],
+         "-u", identity + "_votemap", "-s", "peak agreement {peak_agreement}", "-t", info + " "],
     ]
     log_path = work_dir / LOG_NAME
     with log_path.open("w") as log:

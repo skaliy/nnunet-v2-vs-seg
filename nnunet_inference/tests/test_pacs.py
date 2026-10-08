@@ -37,9 +37,15 @@ class PacsTests(unittest.TestCase):
                                  use_tta=True, pr2mask_dir=Path("/pr2mask"))
             tag_mask.assert_called_once_with(work / "labels" / "1.2.8", work / "mask")
             self.assertEqual(run.call_count, 3)
-            for call in run.call_args_list:
-                command = call.args[0]
-                self.assertIn("test_nn_m1_b" + medium[:32] + "_t1", command)
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertEqual([command[command.index("-u") + 1] for command in commands],
+                             ["test_nnunet_medium_tta_report", "test_nnunet_medium_tta_fused",
+                              "test_nnunet_medium_tta_votemap"])
+            self.assertEqual(commands[0][commands[0].index("-i") + 1], "test_tta")
+            self.assertTrue(all("-i" not in command for command in commands[1:]))
+            titles = {command[command.index("-t") + 1] for command in commands}
+            self.assertEqual(len(titles), 1)
+            self.assertRegex(titles.pop(), r"^nnunet_m 5-model ensemble, [A-Z][a-z]{2}\d{6} $")
             self.assertEqual({p.name for p in output.iterdir()}, set(pacs.FINAL_OUTPUTS) | {pacs.LOG_NAME})
             rows = json.loads(next((output / "redcap").glob("*/output.json")).read_text())
             self.assertTrue(all(r["redcap_repeat_instance"] == "5" for r in rows))
@@ -48,7 +54,8 @@ class PacsTests(unittest.TestCase):
             self.assertFalse((output / "mask").exists())
 
     def test_postprocessing_requires_exactly_one_pr2mask_mask_series(self):
-        deployment = dict(model_name="Medium", bundle_sha256="a" * 64)
+        deployment = dict(model_type="nnunet_medium", model_name="Medium", bundle_sha256="a" * 64,
+                          members=[dict(member_id=f"fold_{n}") for n in range(5)])
         for extra in (None, "1.2.99"):
             with self.subTest(extra=extra), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -75,7 +82,8 @@ class PacsTests(unittest.TestCase):
             source, work, *_ = fixture(root)
             output = root / "output"
             output.mkdir()
-            deployment = dict(model_name="Medium", bundle_sha256="a" * 64)
+            deployment = dict(model_type="nnunet_medium", model_name="Medium", bundle_sha256="a" * 64,
+                              members=[dict(member_id=f"fold_{n}") for n in range(5)])
             with patch.object(pacs.subprocess, "run", side_effect=RuntimeError("tool failure")):
                 with self.assertRaisesRegex(RuntimeError, "tool failure"):
                     pacs.postprocess(source, work, output, deployment, version="test",
