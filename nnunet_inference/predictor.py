@@ -6,6 +6,11 @@ import torch
 
 FIVE_FOLDS = (0, 1, 2, 3, 4)
 
+# TTA averages the original and one flip along nnU-Net axis 0, the
+# inferior-superior slice axis of the LPS inputs. On the 344 held-out cases
+# this matched nnU-Net's eight-flip mirroring at a quarter of the cost.
+TTA_MIRROR_AXES = (0,)
+
 
 def _load_predictor_class():
     """Import nnU-Net only when a prediction model is built."""
@@ -140,8 +145,9 @@ def build_predictor(model_dir, device="auto",
                     folds="auto", parallel=False):
     """Construct an nnUNetPredictor initialised from a trained model folder
     using either ``fold_all`` or an ensemble of folds. ``folds="auto"`` detects
-    a complete five-fold model before falling back to ``fold_all``. Mirrors
-    nnUNetv2_predict defaults (mirroring TTA on).
+    a complete five-fold model before falling back to ``fold_all``. TTA is on
+    by default and mirrors only ``TTA_MIRROR_AXES`` (two forward passes per
+    fold) instead of every trained mirror axis.
     """
     resolved_folds = _validate_model_dir(model_dir, checkpoint_name, folds)
     predictor_class = _load_predictor_class()
@@ -165,6 +171,12 @@ def build_predictor(model_dir, device="auto",
         str(model_dir), use_folds=resolved_folds[:1] if parallel else resolved_folds,
         checkpoint_name=checkpoint_name
     )
+    # nnU-Net averages every combination of the allowed axes, so one axis
+    # gives the original plus a single flip.
+    trained_axes = predictor.allowed_mirroring_axes or ()
+    predictor.allowed_mirroring_axes = tuple(
+        axis for axis in trained_axes if axis in TTA_MIRROR_AXES
+    ) or None
     if parallel:
         predictor.parallel_folds = resolved_folds
         predictor.parallel_model_dir = str(model_dir)

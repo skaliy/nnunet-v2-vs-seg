@@ -100,6 +100,47 @@ class TestFoldSelection(unittest.TestCase):
                 checkpoint_name="checkpoint_final.pth",
             )
 
+    def test_tta_mirrors_only_the_slice_axis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = self._model_dir(
+                tmp, [f"fold_{fold}" for fold in range(5)]
+            )
+            for trained, expected in [((0, 1, 2), (0,)), (None, None), ((1, 2), None)]:
+                with mock.patch.object(
+                    predictor_module, "_load_predictor_class"
+                ) as load:
+                    load.return_value.return_value.allowed_mirroring_axes = trained
+                    predictor = predictor_module.build_predictor(
+                        model_dir, device="cpu", folds="auto"
+                    )
+                self.assertTrue(load.return_value.call_args.kwargs["use_mirroring"])
+                self.assertEqual(predictor.allowed_mirroring_axes, expected)
+
+
+class TestMirroringPasses(unittest.TestCase):
+    def test_slice_axis_tta_is_original_plus_one_flip(self):
+        try:
+            from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+        except ImportError:
+            self.skipTest("nnunetv2 is not installed")
+        inputs = []
+
+        def network(x):
+            inputs.append(x.clone())
+            return x * torch.arange(x.shape[2], dtype=x.dtype).view(1, 1, -1, 1, 1)
+
+        predictor = nnUNetPredictor(device=torch.device("cpu"), allow_tqdm=False)
+        predictor.network = network
+        predictor.use_mirroring = True
+        predictor.allowed_mirroring_axes = predictor_module.TTA_MIRROR_AXES
+        x = torch.rand(1, 1, 4, 3, 2)
+        result = predictor._internal_maybe_mirror_and_predict(x)
+
+        self.assertEqual(len(inputs), 2)
+        torch.testing.assert_close(inputs[1], torch.flip(x, (2,)))
+        expected = (network(x) + torch.flip(network(torch.flip(x, (2,))), (2,))) / 2
+        torch.testing.assert_close(result, expected)
+
 
 class TestPredictSingleCase(unittest.TestCase):
     def test_uses_synchronous_single_array_api(self):

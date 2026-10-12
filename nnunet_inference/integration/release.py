@@ -18,16 +18,17 @@ def inspect(image):
     return json.loads(subprocess.check_output(["docker", "image", "inspect", image]))[0]
 
 
-def handoff_readme(image_tag, repeat_instance):
+def handoff_readme(image_tag, repeat_instance, manifest):
     version = image_tag.rsplit(":", 1)[-1]
     return f'''# nnU-Net PACS handoff — {version}
 
-CPU-only Dataset003 ResEnc-M, using five fold-best models.
+CPU-only {manifest["model_name"]}, using each fold's {manifest["checkpoint"]}.
 Image: `{image_tag}` (`latest` is also included).
 
 ## Run
 
-Defaults: **TTA on**, five parallel folds, **three CPU threads per fold**.
+Defaults: **TTA on** (original plus one inferior-superior flip), five parallel
+folds, **three CPU threads per fold**.
 Disable TTA with `ROR_CONT_OPTIONS='{{"tta":false}}'`.
 
 ```bash
@@ -77,7 +78,7 @@ def main():
                  qualification="Image integrity checked; see qualification.json for completed inference checks.")
     (release / "release.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
     (release / "README.md").write_text(handoff_readme(
-        args.image_tag, state["redcap_repeat_instance"]))
+        args.image_tag, state["redcap_repeat_instance"], manifest))
 
 
 if __name__ == "__main__":

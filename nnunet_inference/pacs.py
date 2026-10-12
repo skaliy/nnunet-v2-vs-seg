@@ -1,4 +1,4 @@
-"""Research PACS inference and pr2mask/REDCap publication for ResEnc-M."""
+"""Research PACS inference and pr2mask/REDCap publication for ResEnc-M or ResEnc-L."""
 import argparse
 from datetime import datetime
 import os
@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tempfile
 
-from .deployment import MODEL_TYPE, validate_deployment
+from .deployment import MODELS, validate_deployment
 from .dicom_io import tag_pr2mask_mask
 from .pipeline import run_inference
 from .redcap_output import _series, model_repeat_instance, write_redcap_mask
@@ -17,7 +17,7 @@ FINAL_OUTPUTS = ("labels", "fused", "fused_vote_map", "reports", "redcap")
 LOG_NAME = "pacs_command.log"
 # pr2mask fits about 40 title characters on a fused image, so long model types
 # get a shorter visible label.
-TITLE_LABELS = {"nnunet_medium": "nnunet_m"}
+TITLE_LABELS = {"nnunet_medium": "nnunet_m", "nnunet_large": "nnunet_l"}
 
 
 def configure_cpu():
@@ -99,7 +99,7 @@ def postprocess(input_dir, work_dir, output_dir, deployment, *, version,
 
 
 def run_pacs(input_dir, output_dir, *, model_dir="/app/model", version,
-             use_tta=True, pr2mask_dir="/pr2mask"):
+             use_tta=True, pr2mask_dir="/pr2mask", model_type=None):
     input_dir, output_dir, pr2mask_dir = map(Path, (input_dir, output_dir, pr2mask_dir))
     if not version:
         raise RuntimeError("VERSION is required for PACS provenance")
@@ -109,6 +109,8 @@ def run_pacs(input_dir, output_dir, *, model_dir="/app/model", version,
     prepare_output(output_dir)
     validate_input(input_dir)
     deployment = validate_deployment(model_dir, verify_runtime=True)
+    if model_type is not None and model_type != deployment["model_type"]:
+        raise RuntimeError(f"Requested {model_type}, but this image packages {deployment['model_type']}")
     model_repeat_instance(deployment["bundle_sha256"])
     configure_cpu()
     with tempfile.TemporaryDirectory(prefix="nnunet-pacs-") as directory:
@@ -133,11 +135,12 @@ def main(argv=None):
     parser.add_argument("input_dir")
     parser.add_argument("output_dir")
     parser.add_argument("--model-dir", default="/app/model")
-    parser.add_argument("--model-type", choices=(MODEL_TYPE,), default=MODEL_TYPE)
+    parser.add_argument("--model-type", choices=tuple(MODELS),
+                        help="must match the packaged model; defaults to it")
     parser.add_argument("--tta", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args(argv)
     run_pacs(args.input_dir, args.output_dir, model_dir=args.model_dir,
-             version=os.environ.get("VERSION"), use_tta=args.tta)
+             version=os.environ.get("VERSION"), use_tta=args.tta, model_type=args.model_type)
 
 
 if __name__ == "__main__":

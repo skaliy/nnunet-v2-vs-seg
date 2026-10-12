@@ -112,7 +112,7 @@ def validate(input_dir, output_dir):
     payload = json.loads(values["vs_mask_json"])
     deployment = dict(model_type=values["vs_model_type"], bundle_sha256=values["vs_bundle_sha256"],
                       members=[dict(member_id=m) for m in payload["model"]["member_ids"]])
-    if deployment["model_type"] != "nnunet_medium":
+    if deployment["model_type"] not in ("nnunet_medium", "nnunet_large"):
         raise RuntimeError("Wrong REDCap model type")
     instance = model_repeat_instance(deployment["bundle_sha256"])
     if any(row["redcap_repeat_instance"] != instance or row["redcap_repeat_instrument"] != "pr2mask"

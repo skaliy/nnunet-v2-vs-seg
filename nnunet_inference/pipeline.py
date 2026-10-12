@@ -129,6 +129,10 @@ def run_inference(input_dir, output_dir=None, *, model_dir, device="auto",
         model_dir, device=device, checkpoint_name=checkpoint_name,
         disable_tta=disable_tta, folds=resolved_folds, parallel=parallel,
     )
+    if not disable_tta and predictor.allowed_mirroring_axes:
+        uid_context["tta_mirror_axes"] = [
+            int(axis) for axis in predictor.allowed_mirroring_axes
+        ]
     series = dicom_io.read_series(input_dir)
 
     with tempfile.TemporaryDirectory() as tmp:

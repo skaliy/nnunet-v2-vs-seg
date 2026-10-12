@@ -4,6 +4,7 @@ FROM ${FIONA_BASE}
 WORKDIR /app
 
 ARG conda_env=nnunet-vsseg
+ARG MODEL_TYPE=nnunet_large
 ENV NNUNET_CONDA_ENV=${conda_env} \
     PYTHONPATH=/app/_pkg \
     REPORT_FONT_PATH=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
@@ -13,10 +14,10 @@ LABEL com.ror.vendor="MMIV.no" \
       com.ror.conda.env.name="${conda_env}" \
       com.mmiv.model.folds="0,1,2,3,4" \
       com.mmiv.tta.default="true" \
-      com.mmiv.model.type="nnunet_medium" \
+      com.mmiv.model.type="${MODEL_TYPE}" \
       com.mmiv.cpu.threads="16" \
       com.mmiv.memory.gib="64" \
-      description="Curated ResEnc-M five-fold nnU-Net v2 VS PACS inference and REDCap export (CPU, TTA on)."
+      description="Curated five-fold nnU-Net v2 VS PACS inference and REDCap export (CPU, TTA on)."
 
 COPY requirements.yml /app/requirements.yml
 RUN conda env create -f /app/requirements.yml && \

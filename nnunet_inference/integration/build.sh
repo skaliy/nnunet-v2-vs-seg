@@ -1,14 +1,20 @@
 #!/bin/bash
-# Stage, build, verify and export the curated medium nnU-Net PACS image.
+# Stage, build, verify and export the curated medium or large nnU-Net PACS image.
 set -euo pipefail
 cd "$(dirname "$0")"
 readonly INTEGRATION_DIR="$(pwd)"
 readonly PACKAGE_SRC="$(cd .. && pwd)"
 readonly PROJECT_ROOT="$(cd ../.. && pwd)"
-readonly MODEL_SRC="${NNUNET_MODEL_SRC:-${PROJECT_ROOT}/nnUNet_data/nnUNet_results/Dataset003_VSSegmentationCurated/nnUNetTrainer__nnUNetResEncUNetMPlans__3d_fullres}"
-readonly CHECKPOINT="${NNUNET_CHECKPOINT:-best}"
+readonly NNUNET_MODEL="${NNUNET_MODEL:-large}"
+case "${NNUNET_MODEL}" in
+    medium) plans=nnUNetResEncUNetMPlans; default_image=nnunet-vsseg-5fold ;;
+    large) plans=nnUNetResEncUNetLPlans; default_image=nnunet-vsseg-large-5fold ;;
+    *) echo 'Error: NNUNET_MODEL must be medium or large' >&2; exit 2 ;;
+esac
+readonly MODEL_SRC="${NNUNET_MODEL_SRC:-${PROJECT_ROOT}/nnUNet_data/nnUNet_results/Dataset003_VSSegmentationCurated/nnUNetTrainer__${plans}__3d_fullres}"
+readonly CHECKPOINT="${NNUNET_CHECKPOINT:-final}"
 readonly PYTHON_BIN="${NNUNET_PYTHON:-python}"
-readonly IMAGE_NAME="${IMAGE_NAME:-nnunet-vsseg-5fold}"
+readonly IMAGE_NAME="${IMAGE_NAME:-${default_image}}"
 readonly VERSION="${VERSION:-$(date -u +%Y%m%dT%H%M%SZ)}"
 readonly DATED_TAG="${IMAGE_NAME}:${VERSION}"
 readonly BASE_IMAGE=haukebartsch/fiona-component-python:latest
@@ -47,7 +53,7 @@ docker pull "${BASE_IMAGE}"
 BASE_REF="$(docker image inspect "${BASE_IMAGE}" --format '{{index .RepoDigests 0}}')"
 test -n "${BASE_REF}"
 docker build --pull --build-arg "VERSION=${VERSION}" --build-arg "IMAGE_NAME=${IMAGE_NAME}" \
-    --build-arg "FIONA_BASE=${BASE_REF}" \
+    --build-arg "FIONA_BASE=${BASE_REF}" --build-arg "MODEL_TYPE=nnunet_${NNUNET_MODEL}" \
     -f .ror/virt/Dockerfile -t "${DATED_TAG}" -t "${IMAGE_NAME}:latest" .
 docker run --rm --network none --entrypoint /bin/bash "${DATED_TAG}" -lc \
     'set -e

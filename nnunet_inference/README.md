@@ -17,7 +17,9 @@ python -m nnunet_inference /path/to/dicom [output_dir] \
 `output_dir` defaults to the input series parent. Outputs are written to
 `mask/` and `vote_map/`. `--folds auto` accepts either `fold_all` or a complete
 `fold_0`–`fold_4` ensemble; select folds explicitly when both layouts exist.
-Mirror TTA is enabled by default and can be disabled with `--no-tta`.
+Mirror TTA is enabled by default and can be disabled with `--no-tta`. It
+averages the original and one flip along the inferior-superior slice axis
+(nnU-Net axis 0), two forward passes per fold.
 `--parallel-folds --device cpu` runs selected folds concurrently with three
 threads per fold; the PACS container uses this mode with all five folds.
 
@@ -49,4 +51,4 @@ NNUNET_MODEL_DIR=/path/to/trained-model \
 ```
 
 Medical images and models are intentionally excluded from Git. See
-[`integration/README.md`](integration/README.md) for the curated ResEnc-M five-fold PACS container, CPU limits, REDCap export and release qualification.
+[`integration/README.md`](integration/README.md) for the curated ResEnc-M and ResEnc-L five-fold PACS containers, CPU limits, REDCap export and release qualification.

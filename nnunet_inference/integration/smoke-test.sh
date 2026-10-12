@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 readonly INPUT_DIR="${1:-}"
 readonly OUTPUT_DIR="${2:-$(pwd)/smoke-test-output}"
-readonly IMAGE_TAG="${IMAGE_TAG:-nnunet-vsseg-5fold:latest}"
+readonly IMAGE_TAG="${IMAGE_TAG:-nnunet-vsseg-large-5fold:latest}"
 readonly PYTHON_BIN="${NNUNET_PYTHON:-python}"
 readonly TTA="${TTA:-true}"
 if [ -z "${INPUT_DIR}" ] || [ ! -d "${INPUT_DIR}" ]; then
@@ -18,7 +18,7 @@ fi
 CPUSET="${CPUSET:-$("${PYTHON_BIN}" -c 'import os; ids=sorted(os.sched_getaffinity(0))[:16]; assert len(ids)==16, "16 available CPUs required"; print(",".join(map(str,ids)))')}"
 docker run --rm --network none --cpus 16 --cpuset-cpus "${CPUSET}" \
     --memory 64g --memory-swap 64g \
-    -e "ROR_CONT_OPTIONS={\"model-type\":\"nnunet_medium\",\"tta\":${TTA}}" \
+    -e "ROR_CONT_OPTIONS={\"tta\":${TTA}}" \
     -v "$(realpath "${INPUT_DIR}"):/data/input:ro" \
     -v "$(realpath "${OUTPUT_DIR}"):/output" "${IMAGE_TAG}"
 PYTHONPATH="$(cd ../.. && pwd)" "${PYTHON_BIN}" validate_output.py "${INPUT_DIR}" "${OUTPUT_DIR}"

@@ -97,15 +97,18 @@ class EntrypointTests(unittest.TestCase):
         for options, expected in [("{}", "--tta"), ('{"tta":false}', "--no-tta"),
                                   ('{"model-type":"nnunet_medium","tta":true}', "--tta"),
                                   ('{"tta":"false"}', None), ('{"tta":null}', None),
-                                  ('{"model-type":"large"}', None), ('{"other":1}', None),
+                                  ('{"model-type":"large"}', None), ('{"model-type":"nnunet_large"}', None),
+                                  ('{"other":1}', None),
                                   ('{"tta":true};touch /tmp/invalid', None)]:
             with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 (root / "python").write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
                 (root / "python").chmod(0o755)
                 (root / "shell-env").write_text('conda() { return 0; }\nexport -f conda\n')
+                (root / "deployment_manifest.json").write_text('{"model_type": "nnunet_medium"}')
                 env = dict(os.environ, PATH=str(root) + ":" + os.environ["PATH"],
-                           BASH_ENV=str(root / "shell-env"), ROR_CONT_OPTIONS=options)
+                           BASH_ENV=str(root / "shell-env"), ROR_CONT_OPTIONS=options,
+                           NNUNET_MODEL_DIR=str(root))
                 result = subprocess.run(["bash", str(entrypoint)], env=env, text=True,
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 if expected is None:
@@ -113,4 +116,5 @@ class EntrypointTests(unittest.TestCase):
                 else:
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(result.stdout.splitlines(), ["-m", "nnunet_inference.pacs",
-                                     "/data/input", "/output", expected])
+                                     "/data/input", "/output", expected,
+                                     "--model-type", "nnunet_medium"])

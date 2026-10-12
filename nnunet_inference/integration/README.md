@@ -1,15 +1,20 @@
-# nnU-Net ResEnc-M Research PACS container
+# nnU-Net ResEnc-M / ResEnc-L Research PACS container
 
-The active build packages the trained **Dataset003_VSSegmentationCurated medium
-ResEnc-M** model: numeric folds 0–4 with `3d_fullres`. Each fold uses its best
-checkpoint by default, matching fastMONAI's fold-best release convention.
-`NNUNET_CHECKPOINT=final` selects final checkpoints instead. The previous
-Dataset002 ResEnc-L images and release archives are retained for rollback.
+Each image packages one trained **Dataset003_VSSegmentationCurated** model,
+numeric folds 0–4 with `3d_fullres`: large ResEnc-L (`NNUNET_MODEL=large`,
+the default, image `nnunet-vsseg-large-5fold`) or medium ResEnc-M
+(`NNUNET_MODEL=medium`, image `nnunet-vsseg-5fold`). Large is the PACS model:
+under 16 CPUs it is faster than medium and had the fewest false positives. Each fold uses its
+final checkpoint by default, as nnU-Net does and as in the cross-validation
+results. `NNUNET_CHECKPOINT=best` selects fold-best checkpoints; the registered
+medium bundle (instance 5) was built that way. The previous Dataset002 ResEnc-L
+images and release archives are retained for rollback.
 
 The container follows fastMONAI's PACS output and REDCap contract. It keeps
 nnU-Net's own preprocessing, Gaussian sliding windows, trained patch size
-`48 x 192 x 192` in nnU-Net axis order, mirror axes and ordered fold **logit**
-averaging. Probability export occurs after the logit ensemble. No largest
+`48 x 192 x 192` in nnU-Net axis order and ordered fold **logit** averaging.
+TTA mirrors only axis 0 (original plus an inferior-superior flip), which matched
+nnU-Net's eight-flip mirroring on the held-out folds at a quarter of the cost. Probability export occurs after the logit ensemble. No largest
 connected-component filter is applied during inference.
 
 ## Prepare, test, build and export
@@ -31,6 +36,7 @@ cd nnunet_inference/integration
 ./build.sh --stage-only
 ./build.sh --build
 ./build.sh --save
+NNUNET_MODEL=medium ./build.sh --save
 ```
 
 Each invocation stages and verifies the bundle. Successful builds remove the
@@ -39,7 +45,7 @@ for inspection. Choose one build mode per release; `--save` builds, verifies
 and exports in one invocation. `VERSION`
 defaults to a UTC timestamp. Set `NNUNET_PYTHON` to a staging interpreter when
 needed. `NNUNET_MODEL_SRC` may point to a copy of the same approved Dataset003
-medium model, whose dataset/plan/trainer/fold identities are checked.
+model, whose dataset/plan/trainer/fold identities are checked.
 
 Model metadata, inference checkpoint hashes, source checkpoint hashes,
 checkpoint epochs, fold order, CPU settings, runtime versions and the DICOM
@@ -53,8 +59,8 @@ allocate its bundle SHA-256 an unused permanent REDCap instance of at least
 holds the original (manual) mask, and REDCap instances are filled in order, so
 model instances follow it without gaps. Unknown bundles and instance 1 fail
 closed. Never renumber existing allocations: fastMONAI UNet is 2, DynUNet is 3,
-4 is reserved for the next fastMONAI model, and the initial curated medium
-nnUNet fold-best bundle is **5**. Preserve these allocations across the
+4 is reserved for the next fastMONAI model, the initial curated medium
+nnUNet fold-best bundle is **5** and the large final-checkpoint bundle is **6**. Preserve these allocations across the
 projects when adding future releases.
 
 ## CPU and memory contract
@@ -69,9 +75,9 @@ Enforce **16 CPU threads and 64 GiB**, with no additional swap allowance:
 
 ```bash
 docker run --rm --cpus 16 --memory 64g --memory-swap 64g \
-  -e ROR_CONT_OPTIONS='{"model-type":"nnunet_medium","tta":true}' \
+  -e ROR_CONT_OPTIONS='{"tta":true}' \
   -v /absolute/path/dicom:/data/input:ro \
-  -v /absolute/path/empty-output:/output nnunet-vsseg-5fold:<VERSION>
+  -v /absolute/path/empty-output:/output nnunet-vsseg-large-5fold:<VERSION>
 ```
 
 For fixed host CPU selection, also pass `--cpuset-cpus` with 16 allowed logical
@@ -80,9 +86,10 @@ launcher; memory limits cannot be encoded in a Dockerfile.
 
 ## Runtime options and outputs
 
-`ROR_CONT_OPTIONS` supports `model-type` (`nnunet_medium` only) and `tta`
-(a JSON Boolean). Defaults are medium nnUNet and **TTA enabled**, as in
-fastMONAI. `{"tta":false}` disables mirror TTA. Unknown keys, other model
+`ROR_CONT_OPTIONS` supports `model-type` and `tta` (a JSON Boolean).
+`model-type` is optional and must name the packaged model (`nnunet_medium` or
+`nnunet_large`). **TTA is enabled** by default, as in fastMONAI. TTA averages the original and one inferior-superior flip.
+`{"tta":false}` disables mirror TTA. Unknown keys, other model
 types, and string/numeric TTA values are rejected before inference.
 
 The container returns `labels`, `fused`, `fused_vote_map`, `reports`, `redcap`,
@@ -117,15 +124,15 @@ Use a controlled DICOM fixture for full inference and a generated nonuniform
 full-sized patch for native-versus-parallel numerical regression:
 
 ```bash
-IMAGE_TAG=nnunet-vsseg-5fold:<VERSION> TTA=false \
-  ./smoke-test.sh /path/to/test-dicom /tmp/nnunet-medium-output
+IMAGE_TAG=nnunet-vsseg-large-5fold:<VERSION> TTA=false \
+  ./smoke-test.sh /path/to/test-dicom /tmp/nnunet-large-output
 # Repeat with TTA=true and a fresh output directory to qualify full-case TTA.
 ```
 
 `smoke-test.sh` fixes CPU affinity to 16 logical threads, applies a 64 GiB
 memory/swap cap and validates all DICOM outputs, reconstructed REDCap voxels,
 physical geometry, source IDs, repeat instance and dictionary fields.
-`patch_regression.py` compares actual medium-network logits and masks for
+`patch_regression.py` compares actual network logits and masks for
 sequential and parallel folds, with TTA both off and on. Run it using the
 pinned image environment; it requires no medical images.
 
@@ -137,7 +144,7 @@ docker run --rm --network none --cpus 16 --memory 64g --memory-swap 64g \
   --entrypoint /bin/bash \
   -v "$PWD/patch_regression.py:/validation/patch_regression.py:ro" \
   -v /tmp/nnunet-patch-regression:/validation/output \
-  nnunet-vsseg-5fold:<VERSION> -lc \
+  nnunet-vsseg-large-5fold:<VERSION> -lc \
   'python /validation/patch_regression.py --output /validation/output/patch_results.json'
 ```
 
@@ -159,6 +166,11 @@ site-controlled selector for a single CE-T1 input series:
     "select": "<PACS-ADMIN-APPROVED VS CE-T1 SERIES SELECTOR>",
     "ROR_CONT_OPTIONS": "{\"model-type\":\"nnunet_medium\",\"tta\":true}",
     "docker_image": "nnunet-vsseg-5fold:<QUALIFIED_VERSION>"
+  },
+  "MMIVVestSchNNUNetLarge": {
+    "select": "<PACS-ADMIN-APPROVED VS CE-T1 SERIES SELECTOR>",
+    "ROR_CONT_OPTIONS": "{\"model-type\":\"nnunet_large\",\"tta\":true}",
+    "docker_image": "nnunet-vsseg-large-5fold:<QUALIFIED_VERSION>"
   }
 }
 ```

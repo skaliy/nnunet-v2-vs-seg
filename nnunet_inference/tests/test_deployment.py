@@ -12,7 +12,7 @@ from nnunet_inference import deployment
 def model_fixture(root):
     source = root / "source"
     source.mkdir()
-    plans = dict(dataset_name=deployment.DATASET, plans_name=deployment.PLANS,
+    plans = dict(dataset_name=deployment.DATASET, plans_name=deployment.MODELS["nnunet_medium"]["plans"],
                  configurations={"3d_fullres": dict(patch_size=[48, 192, 192],
                      architecture=dict(network_class_name="dynamic_network_architectures.architectures.unet.ResidualEncoderUNet",
                                        arch_kwargs=dict(features_per_stage=[32, 64, 128, 256, 320, 320])))})
@@ -20,7 +20,7 @@ def model_fixture(root):
     (source / "dataset.json").write_text(json.dumps(dict(channel_names={"0": "T1"},
         labels={"background": 0, "VS": 1}, numTraining=344, file_ending=".nii.gz")))
     for fold in range(5):
-        path = source / f"fold_{fold}" / "checkpoint_best.pth"
+        path = source / f"fold_{fold}" / "checkpoint_final.pth"
         path.parent.mkdir()
         torch.save(dict(network_weights={"weight": torch.ones(2)}, trainer_name="nnUNetTrainer",
                         current_epoch=10 + fold, init_args=dict(configuration="3d_fullres", fold=fold),
@@ -34,17 +34,17 @@ class BundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = model_fixture(root)
-            before = deployment.file_sha256(source / "fold_0/checkpoint_best.pth")
+            before = deployment.file_sha256(source / "fold_0/checkpoint_final.pth")
             with patch.object(deployment, "build_predictor") as loader:
                 manifest = deployment.prepare_bundle(source, root / "model")
                 self.assertEqual(loader.call_count, 5)
             self.assertEqual(deployment.validate_deployment(root / "model"), manifest)
-            checkpoint = torch.load(root / "model/fold_0/checkpoint_best.pth", weights_only=False)
+            checkpoint = torch.load(root / "model/fold_0/checkpoint_final.pth", weights_only=False)
             self.assertNotIn("optimizer_state", checkpoint)
             torch.testing.assert_close(checkpoint["network_weights"]["weight"], torch.ones(2))
             self.assertEqual(checkpoint["inference_allowed_mirroring_axes"], (0, 1, 2))
-            self.assertEqual(deployment.file_sha256(source / "fold_0/checkpoint_best.pth"), before)
-            (root / "model/fold_0/checkpoint_best.pth").write_bytes(b"corrupted")
+            self.assertEqual(deployment.file_sha256(source / "fold_0/checkpoint_final.pth"), before)
+            (root / "model/fold_0/checkpoint_final.pth").write_bytes(b"corrupted")
             with self.assertRaisesRegex(ValueError, "file checksum"):
                 deployment.validate_deployment(root / "model")
 
@@ -52,7 +52,7 @@ class BundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = model_fixture(root)
-            path = source / "fold_4/checkpoint_best.pth"
+            path = source / "fold_4/checkpoint_final.pth"
             path.unlink()
             with self.assertRaises(FileNotFoundError):
                 deployment.prepare_bundle(source, root / "model")
