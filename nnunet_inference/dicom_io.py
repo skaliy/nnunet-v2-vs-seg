@@ -254,7 +254,7 @@ def _write_dicom_from_nifti(nifti_path, template_dir, out_dir, output_kind,
         f"tta={'on' if uid_context['tta'] else 'off'}"
     )
     if uid_context.get("tta_mirror_axes"):
-        derivation += " (mirror axes " + ",".join(
+        derivation += " (original + one flip along axes " + ",".join(
             str(axis) for axis in uid_context["tta_mirror_axes"]) + ")"
     if output_kind == "probability":
         derivation += "; foreground probability = stored uint16 value / 65535"

@@ -27,7 +27,8 @@ Image: `{image_tag}` (`latest` is also included).
 
 ## Run
 
-Defaults: **TTA on** (original plus one inferior-superior flip), five parallel
+Defaults: **TTA on** (original plus one copy flipped inferior-superior and
+anterior-posterior together), five parallel
 folds, **three CPU threads per fold**.
 Disable TTA with `ROR_CONT_OPTIONS='{{"tta":false}}'`.
 

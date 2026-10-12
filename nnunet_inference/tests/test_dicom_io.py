@@ -207,7 +207,7 @@ class TestOutputBridge(unittest.TestCase):
 
             prob_nifti = self._sitk_float_nifti_on_grid(prob, tmp)
             vote_dir = Path(tmp) / "vote_map"
-            tta_context = {**UID_CONTEXT, "tta": True, "tta_mirror_axes": [0]}
+            tta_context = {**UID_CONTEXT, "tta": True, "tta_mirror_axes": [0, 1]}
             dicom_io.write_prob_dicom(prob_nifti, FIXTURE, vote_dir, tta_context,
                                       software_versions=sw)
             ds2 = pydicom.dcmread(str(sorted(vote_dir.iterdir())[0]),
@@ -220,7 +220,7 @@ class TestOutputBridge(unittest.TestCase):
             self.assertEqual(image_type2[-1], "PROBABILITY")
             self.assertIn("foreground probability", ds2.SeriesDescription)
             self.assertIn("stored uint16 value / 65535", ds2.DerivationDescription)
-            self.assertIn("tta=on (mirror axes 0)", ds2.DerivationDescription)
+            self.assertIn("tta=on (original + one flip along axes 0,1)", ds2.DerivationDescription)
             self.assertNotIn("RescaleSlope", ds2)
             self.assertNotIn("RescaleIntercept", ds2)
 

@@ -12,9 +12,11 @@ images and release archives are retained for rollback.
 
 The container follows fastMONAI's PACS output and REDCap contract. It keeps
 nnU-Net's own preprocessing, Gaussian sliding windows, trained patch size
-`48 x 192 x 192` in nnU-Net axis order and ordered fold **logit** averaging.
-TTA mirrors only axis 0 (original plus an inferior-superior flip), which matched
-nnU-Net's eight-flip mirroring on the held-out folds at a quarter of the cost. Probability export occurs after the logit ensemble. No largest
+`64 x 320 x 256` (large) or `48 x 192 x 192` (medium) in nnU-Net axis order and
+ordered fold **logit** averaging. TTA averages the original and one copy flipped
+inferior-superior and anterior-posterior together (nnU-Net axes 0 and 1). On the
+held-out folds this had as few or fewer false positives than nnU-Net's
+eight-flip mirroring, at a quarter of the cost. Probability export occurs after the logit ensemble. No largest
 connected-component filter is applied during inference.
 
 ## Prepare, test, build and export
@@ -88,7 +90,7 @@ launcher; memory limits cannot be encoded in a Dockerfile.
 
 `ROR_CONT_OPTIONS` supports `model-type` and `tta` (a JSON Boolean).
 `model-type` is optional and must name the packaged model (`nnunet_medium` or
-`nnunet_large`). **TTA is enabled** by default, as in fastMONAI. TTA averages the original and one inferior-superior flip.
+`nnunet_large`). **TTA is enabled** by default, as in fastMONAI. TTA averages the original and one copy flipped inferior-superior and anterior-posterior together.
 `{"tta":false}` disables mirror TTA. Unknown keys, other model
 types, and string/numeric TTA values are rejected before inference.
 

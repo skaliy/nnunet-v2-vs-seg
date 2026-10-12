@@ -18,8 +18,8 @@ python -m nnunet_inference /path/to/dicom [output_dir] \
 `mask/` and `vote_map/`. `--folds auto` accepts either `fold_all` or a complete
 `fold_0`–`fold_4` ensemble; select folds explicitly when both layouts exist.
 Mirror TTA is enabled by default and can be disabled with `--no-tta`. It
-averages the original and one flip along the inferior-superior slice axis
-(nnU-Net axis 0), two forward passes per fold.
+averages the original and one copy flipped inferior-superior and
+anterior-posterior together (nnU-Net axes 0 and 1), two forward passes per fold.
 `--parallel-folds --device cpu` runs selected folds concurrently with three
 threads per fold; the PACS container uses this mode with all five folds.
 
