@@ -17,7 +17,7 @@ from nnunet_inference.redcap_output import encode_mask, decode_mask, build_mask_
 from nnunet_inference import redcap_output
 from nnunet_inference.tests.synthetic import write_image as _write_test_image
 
-DEPLOYMENT = {'model_type': 'unet', 'bundle_sha256': '4d8991eff16c90ad0eb185757df9cfccf5615cb7a5d7a9d3304c61e65ad9d172', 'members': [{'member_id': 'all_data'}]}
+DEPLOYMENT = {'model_type': 'nnunet_large', 'bundle_sha256': 'e91f17a3af1621a773a562ba12e426404322119234b91195fc8ef9382b0e79cc', 'members': [{'member_id': f'fold_{n}'} for n in range(5)]}
 
 
 def fixture(root, empty=False):

@@ -60,10 +60,11 @@ allocate its bundle SHA-256 an unused permanent REDCap instance of at least
 2 in `../redcap_model_instances.json`. Instance 1 of the `pr2mask` instrument
 holds the original (manual) mask, and REDCap instances are filled in order, so
 model instances follow it without gaps. Unknown bundles and instance 1 fail
-closed. Never renumber existing allocations: fastMONAI UNet is 2, DynUNet is 3,
-4 is reserved for the next fastMONAI model, the initial curated medium
-nnUNet fold-best bundle is **5** and the large final-checkpoint bundle is **6**. Preserve these allocations across the
-projects when adding future releases.
+closed. Never renumber allocations after a REDCap import: the large
+final-checkpoint bundle is **2**, the initial curated medium nnUNet fold-best
+bundle is **5**, and the fastMONAI models will get their numbers from the
+fastMONAI project. Preserve these allocations across the projects when adding
+future releases.
 
 ## CPU and memory contract
 
