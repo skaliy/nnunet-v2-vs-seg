@@ -6,8 +6,8 @@ the default, image `nnunet-vsseg-large-5fold`) or medium ResEnc-M
 (`NNUNET_MODEL=medium`, image `nnunet-vsseg-5fold`). Large is the PACS model:
 under 16 CPUs it is faster than medium and had the fewest false positives. Each fold uses its
 final checkpoint by default, as nnU-Net does and as in the cross-validation
-results. `NNUNET_CHECKPOINT=best` selects fold-best checkpoints; the registered
-medium bundle (instance 5) was built that way. The previous Dataset002 ResEnc-L
+results. `NNUNET_CHECKPOINT=best` selects fold-best checkpoints. Medium is not deployed and
+has no REDCap instance, so a medium build stops until one is registered. The previous Dataset002 ResEnc-L
 images and release archives are retained for rollback.
 
 The container follows fastMONAI's PACS output and REDCap contract. It keeps
