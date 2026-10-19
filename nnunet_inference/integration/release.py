@@ -43,6 +43,19 @@ ror trigger -cont {image_tag} -each -envs '{{"tta":false}}'
 `false` without quotes, and `model-type` is optional (`{manifest["model_type"]}`).
 Anything else, including `""`, is rejected before inference.
 
+As a ror workflow, add this entry to the ror configuration:
+
+```json
+"VSNNUNet": {{
+  "select": "<VS CE-T1 series selector>",
+  "ROR_CONT_OPTIONS": "{{}}",
+  "docker_image": "{image_tag}"
+}},
+```
+
+`"{{}}"` runs the defaults. Use `"{{\\"tta\\":false}}"` to turn TTA off. Don't write `"\\"\\""`
+here: that passes two quote characters and is rejected.
+
 Without ror, mount the input and output folders and pass the options with
 `-e ROR_CONT_OPTIONS='{{"tta":false}}'` if needed:
 
