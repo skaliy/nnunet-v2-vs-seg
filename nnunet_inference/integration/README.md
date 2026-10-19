@@ -89,11 +89,19 @@ launcher; memory limits cannot be encoded in a Dockerfile.
 
 ## Runtime options and outputs
 
+No options are needed. ROR passes the JSON given with `-envs` as `ROR_CONT_OPTIONS`:
+
+```bash
+ror trigger -cont nnunet-vsseg-large-5fold:<VERSION> -each
+ror trigger -cont nnunet-vsseg-large-5fold:<VERSION> -each -envs '{"tta":false}'
+```
+
 `ROR_CONT_OPTIONS` supports `model-type` and `tta` (a JSON Boolean).
 `model-type` is optional and must name the packaged model (`nnunet_medium` or
 `nnunet_large`). **TTA is enabled** by default, as in fastMONAI. TTA averages the original and one copy flipped inferior-superior and anterior-posterior together.
 `{"tta":false}` disables mirror TTA. Unknown keys, other model
-types, and string/numeric TTA values are rejected before inference.
+types, string/numeric TTA values and non-objects such as `""` are rejected before
+inference; the error prints the value it received.
 
 The container returns `labels`, `fused`, `fused_vote_map`, `reports`, `redcap`,
 `pacs_command.log` and `runtime_resources.json`. The nnU-Net `mask` and `vote_map`

@@ -29,8 +29,22 @@ Image: `{image_tag}` (`latest` is also included).
 
 Defaults: **TTA on** (original plus one copy flipped inferior-superior and
 anterior-posterior together), five parallel
-folds, **three CPU threads per fold**.
-Disable TTA with `ROR_CONT_OPTIONS='{{"tta":false}}'`.
+folds, **three CPU threads per fold**. No options are needed.
+Qualified with 16 CPUs and 64 GiB memory.
+
+```bash
+# TTA on (default)
+ror trigger -cont {image_tag} -each
+# TTA off
+ror trigger -cont {image_tag} -each -envs '{{"tta":false}}'
+```
+
+`-envs` sets `ROR_CONT_OPTIONS`, a JSON object: `tta` must be a bare `true` or
+`false` without quotes, and `model-type` is optional (`{manifest["model_type"]}`).
+Anything else, including `""`, is rejected before inference.
+
+Without ror, mount the input and output folders and pass the options with
+`-e ROR_CONT_OPTIONS='{{"tta":false}}'` if needed:
 
 ```bash
 docker run --rm \\

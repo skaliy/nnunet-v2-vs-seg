@@ -94,8 +94,10 @@ class PacsTests(unittest.TestCase):
 class EntrypointTests(unittest.TestCase):
     def test_boolean_options_default_and_rejections(self):
         entrypoint = Path(__file__).resolve().parents[1] / "integration/entrypoint.sh"
-        for options, expected in [("{}", "--tta"), ('{"tta":false}', "--no-tta"),
+        for options, expected in [("", "--tta"), ("{}", "--tta"), ('{"tta":true}', "--tta"),
+                                  ('{"tta":false}', "--no-tta"),
                                   ('{"model-type":"nnunet_medium","tta":true}', "--tta"),
+                                  ('""', None), ('{"tta":""}', None), ('{"--tta":""}', None),
                                   ('{"tta":"false"}', None), ('{"tta":null}', None),
                                   ('{"model-type":"large"}', None), ('{"model-type":"nnunet_large"}', None),
                                   ('{"other":1}', None),
@@ -113,6 +115,7 @@ class EntrypointTests(unittest.TestCase):
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 if expected is None:
                     self.assertNotEqual(result.returncode, 0, options)
+                    self.assertIn(f"invalid ROR_CONT_OPTIONS: {options}", result.stderr)
                 else:
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(result.stdout.splitlines(), ["-m", "nnunet_inference.pacs",
