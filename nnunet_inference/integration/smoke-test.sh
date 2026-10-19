@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 readonly INPUT_DIR="${1:-}"
 readonly OUTPUT_DIR="${2:-$(pwd)/smoke-test-output}"
-readonly IMAGE_TAG="${IMAGE_TAG:-nnunet-vsseg-large-5fold:latest}"
+readonly IMAGE_TAG="${IMAGE_TAG:-nnunet-vsseg:latest}"
 readonly PYTHON_BIN="${NNUNET_PYTHON:-python}"
 readonly TTA="${TTA:-true}"
 if [ -z "${INPUT_DIR}" ] || [ ! -d "${INPUT_DIR}" ]; then

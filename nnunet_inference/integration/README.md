@@ -2,7 +2,7 @@
 
 Each image packages one trained **Dataset003_VSSegmentationCurated** model,
 numeric folds 0–4 with `3d_fullres`: large ResEnc-L (`NNUNET_MODEL=large`,
-the default, image `nnunet-vsseg-large-5fold`) or medium ResEnc-M
+the default, image `nnunet-vsseg`) or medium ResEnc-M
 (`NNUNET_MODEL=medium`, image `nnunet-vsseg-5fold`). Large is the PACS model:
 under 16 CPUs it is faster than medium and had the fewest false positives. Each fold uses its
 final checkpoint by default, as nnU-Net does and as in the cross-validation
@@ -80,7 +80,7 @@ Enforce **16 CPU threads and 64 GiB**, with no additional swap allowance:
 docker run --rm --cpus 16 --memory 64g --memory-swap 64g \
   -e ROR_CONT_OPTIONS='{"tta":true}' \
   -v /absolute/path/dicom:/data/input:ro \
-  -v /absolute/path/empty-output:/output nnunet-vsseg-large-5fold:<VERSION>
+  -v /absolute/path/empty-output:/output nnunet-vsseg:<VERSION>
 ```
 
 For fixed host CPU selection, also pass `--cpuset-cpus` with 16 allowed logical
@@ -92,8 +92,8 @@ launcher; memory limits cannot be encoded in a Dockerfile.
 No options are needed. ROR passes the JSON given with `-envs` as `ROR_CONT_OPTIONS`:
 
 ```bash
-ror trigger -cont nnunet-vsseg-large-5fold:<VERSION> -each
-ror trigger -cont nnunet-vsseg-large-5fold:<VERSION> -each -envs '{"tta":false}'
+ror trigger -cont nnunet-vsseg:<VERSION> -each
+ror trigger -cont nnunet-vsseg:<VERSION> -each -envs '{"tta":false}'
 ```
 
 `ROR_CONT_OPTIONS` supports `model-type` and `tta` (a JSON Boolean).
@@ -135,7 +135,7 @@ Use a controlled DICOM fixture for full inference and a generated nonuniform
 full-sized patch for native-versus-parallel numerical regression:
 
 ```bash
-IMAGE_TAG=nnunet-vsseg-large-5fold:<VERSION> TTA=false \
+IMAGE_TAG=nnunet-vsseg:<VERSION> TTA=false \
   ./smoke-test.sh /path/to/test-dicom /tmp/nnunet-large-output
 # Repeat with TTA=true and a fresh output directory to qualify full-case TTA.
 ```
@@ -155,7 +155,7 @@ docker run --rm --network none --cpus 16 --memory 64g --memory-swap 64g \
   --entrypoint /bin/bash \
   -v "$PWD/patch_regression.py:/validation/patch_regression.py:ro" \
   -v /tmp/nnunet-patch-regression:/validation/output \
-  nnunet-vsseg-large-5fold:<VERSION> -lc \
+  nnunet-vsseg:<VERSION> -lc \
   'python /validation/patch_regression.py --output /validation/output/patch_results.json'
 ```
 
@@ -181,7 +181,7 @@ site-controlled selector for a single CE-T1 input series:
   "MMIVVestSchNNUNetLarge": {
     "select": "<PACS-ADMIN-APPROVED VS CE-T1 SERIES SELECTOR>",
     "ROR_CONT_OPTIONS": "{\"model-type\":\"nnunet_large\",\"tta\":true}",
-    "docker_image": "nnunet-vsseg-large-5fold:<QUALIFIED_VERSION>"
+    "docker_image": "nnunet-vsseg:<QUALIFIED_VERSION>"
   }
 }
 ```
