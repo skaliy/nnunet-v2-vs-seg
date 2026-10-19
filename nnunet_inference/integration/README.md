@@ -122,7 +122,10 @@ deployment version, TTA and creation time. The lossless mask uses schema 1,
 bit-packing, gzip and Base64; geometry is DICOM LPS with lengths in millimetres
 and ordered per-slice positions. Read it using
 `nnunet_inference.redcap_output.decode_mask`. Measurements are one complete
-JSON list, preserving their original region numbers inside that list. A
+JSON list, preserving their original region numbers inside that list. pr2mask's
+own measurement columns are filled from the largest region (most voxels; ties
+keep the lower region number) in the model instance, and sent blank when the
+mask is empty, so the importer must overwrite blanks to clear old values. A
 same-bundle rerun replaces its permanent model instance; different bundles use
 different instances. `output_data_dictionary.zip` extends the pr2mask instrument.
 Install the added fields in the receiving project and ensure its importer

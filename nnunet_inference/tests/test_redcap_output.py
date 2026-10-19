@@ -37,11 +37,14 @@ def fixture(root, empty=False):
     report = work/'redcap'/'1.2.9'
     report.mkdir(parents=True)
     rows = [dict(record_id='SYNTHETIC', redcap_event_name='test_arm_1', redcap_repeat_instrument='pr2mask',
-                 redcap_repeat_instance=str(i), field_name='physical_size', value='1') for i in [1, 2]]
+                 redcap_repeat_instance=str(i), field_name=name, value=value)
+            for i, size in [(1, '20'), (2, '50'), (3, '50')]
+            for name, value in [('number_of_pixel', size), ('physical_size', f'{size}.{i}')]]
     (report/'output.json').write_text(json.dumps([] if empty else rows))
     with zipfile.ZipFile(report/'output_data_dictionary.zip', 'w') as z:
         z.writestr('OriginID.txt', 'PR2MASK')
-        z.writestr('instrument.csv', 'Variable / Field Name,Form Name,Field Type,Field Label\nphysical_size,pr2mask,text,Physical size\n')
+        z.writestr('instrument.csv', 'Variable / Field Name,Form Name,Field Type,Field Label\n'
+                     'number_of_pixel,pr2mask,text,Number of pixel\nphysical_size,pr2mask,text,Physical size\n')
     return source, work, mask, report, ([] if empty else rows)
 
 
@@ -75,7 +78,10 @@ class DicomExportTests(unittest.TestCase):
             values = {r['field_name']: r['value'] for r in rows}
             self.assertEqual(json.loads(values['vs_measurements_json']), [
                 {k: r[k] for k in ('redcap_repeat_instance', 'field_name', 'value')} for r in original])
-            self.assertEqual(set(values), set(FIELDS))
+            self.assertEqual(set(values), set(FIELDS) | {'number_of_pixel', 'physical_size'})
+            self.assertEqual(len(rows), len(values))
+            # Regions 2 and 3 tie on size: the lower region number fills the columns.
+            self.assertEqual((values['number_of_pixel'], values['physical_size']), ('50', '50.2'))
             payload = json.loads(values['vs_mask_json'])
             np.testing.assert_array_equal(decode_mask(payload), mask)
             self.assertEqual(payload['geometry']['image_positions_patient'], [[0,12,31],[2,12,31],[5,12,31]])
@@ -101,6 +107,8 @@ class DicomExportTests(unittest.TestCase):
             rows = json.loads((report/'output.json').read_text())
             self.assertEqual(rows[0]['record_id'], 'SYNTHETIC')
             self.assertEqual(rows[0]['redcap_event_name'], 'test_arm_1')
+            values = {r['field_name']: r['value'] for r in rows}
+            self.assertEqual((values['number_of_pixel'], values['physical_size']), ('', ''))
             np.testing.assert_array_equal(decode_mask(json.loads(next(r['value'] for r in rows if r['field_name']=='vs_mask_json'))), mask)
 
     def test_models_have_distinct_destinations_and_reruns_replace_complete_result(self):
@@ -122,6 +130,8 @@ class DicomExportTests(unittest.TestCase):
         self.assertEqual(by_instance['2']['vs_tta'], '0')
         self.assertEqual(by_instance['2']['vs_deployment_version'], 'v2')
         self.assertEqual(json.loads(by_instance['2']['vs_measurements_json']), [])
+        self.assertEqual(by_instance['2']['physical_size'], '')
+        self.assertEqual(by_instance['3']['physical_size'], '50.2')
         self.assertEqual(json.loads(by_instance['2']['vs_mask_json'])['foreground_voxels'], 0)
         self.assertEqual(by_instance['3']['vs_tta'], '1')
         self.assertTrue(json.loads(by_instance['3']['vs_measurements_json']))
