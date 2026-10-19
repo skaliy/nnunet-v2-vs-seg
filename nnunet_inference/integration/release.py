@@ -18,6 +18,15 @@ def inspect(image):
     return json.loads(subprocess.check_output(["docker", "image", "inspect", image]))[0]
 
 
+def ror_select_entry(image_tag):
+    return f'''"ENTRY_NAME": {{
+  "select": "<VS CE-T1 series selector>",
+  "ROR_CONT_OPTIONS": "{{}}",
+  "docker_image": "{image_tag}"
+}},
+'''
+
+
 def handoff_readme(image_tag, repeat_instance, manifest):
     version = image_tag.rsplit(":", 1)[-1]
     return f'''# nnU-Net PACS handoff — {version}
@@ -43,15 +52,12 @@ ror trigger -cont {image_tag} -each -envs '{{"tta":false}}'
 `false` without quotes, and `model-type` is optional (`{manifest["model_type"]}`).
 Anything else, including `""`, is rejected before inference.
 
-As a ror workflow, add this entry to the ror configuration:
+As a ror workflow, add this entry to the select statements. It is also in
+`ror_select_entry.txt` for copying. Replace `ENTRY_NAME` with the workflow `name`
+in the PACS `config.json` and fill in the series selector:
 
 ```json
-"VSNNUNet": {{
-  "select": "<VS CE-T1 series selector>",
-  "ROR_CONT_OPTIONS": "{{}}",
-  "docker_image": "{image_tag}"
-}},
-```
+{ror_select_entry(image_tag)}```
 
 `"{{}}"` runs the defaults. Use `"{{\\"tta\\":false}}"` to turn TTA off. Don't write `"\\"\\""`
 here: that passes two quote characters and is rejected.
@@ -107,6 +113,7 @@ def main():
     (release / "release.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
     (release / "README.md").write_text(handoff_readme(
         args.image_tag, state["redcap_repeat_instance"], manifest))
+    (release / "ror_select_entry.txt").write_text(ror_select_entry(args.image_tag))
 
 
 if __name__ == "__main__":
