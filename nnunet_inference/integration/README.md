@@ -74,6 +74,12 @@ caps affinity to 16 available logical CPUs; at least 15 are required. The
 preprocessed volume and fold results use disk-backed NumPy buffers rather than
 multiprocessing queues, avoiding Docker's default 64 MiB shared-memory limit.
 
+Each worker keeps one copy of its weights. A lock shared by the workers lets one
+fold at a time run the full-resolution decoder stage, where a forward pass peaks
+in memory. Without it the folds run in step and their peaks add up. On the
+120-slice qualification case this lowers the peak from 31.7 to 20.8 GiB at the
+same speed, with bit-identical logits.
+
 Enforce **16 CPU threads and 64 GiB**, with no additional swap allowance:
 
 ```bash

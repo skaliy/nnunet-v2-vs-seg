@@ -24,8 +24,31 @@ def assign_worker_cpus(count, available=None):
             for i in range(count)]
 
 
+def limit_worker_memory(predictor, decoder_lock):
+    """Keep one copy of the weights and let one fold at a time run the
+    full-resolution decoder stage, where a forward pass peaks in memory.
+    Returns a function giving the seconds spent waiting for the lock."""
+    # nnU-Net copies list_of_parameters into the network before predicting.
+    # Pointing the list at the network's own tensors drops the second copy.
+    predictor.list_of_parameters = [predictor.network.state_dict()]
+    decoder = predictor.network.decoder
+    waited = [0.0]
+
+    def acquire(module, args):
+        started = time.monotonic()
+        decoder_lock.acquire()
+        waited[0] += time.monotonic() - started
+
+    def release(module, args, output):
+        decoder_lock.release()
+
+    decoder.transpconvs[-1].register_forward_pre_hook(acquire)
+    decoder.seg_layers[-1].register_forward_hook(release)
+    return lambda: waited[0]
+
+
 def _fold_worker(model_dir, checkpoint_name, fold, use_tta, cpus, input_path,
-                 output_path, error_path):
+                 output_path, error_path, decoder_lock):
     try:
         os.sched_setaffinity(0, cpus)
         torch.set_num_threads(THREADS_PER_FOLD)
@@ -37,13 +60,15 @@ def _fold_worker(model_dir, checkpoint_name, fold, use_tta, cpus, input_path,
                                     checkpoint_name=checkpoint_name,
                                     disable_tta=not use_tta)
         predictor.allow_tqdm = False
+        lock_wait = limit_worker_memory(predictor, decoder_lock)
         data = np.load(input_path, mmap_mode="c", allow_pickle=False)
         print(f"fold_{fold}: CPUs {cpus}, {THREADS_PER_FOLD} threads, "
               f"TTA={'on' if use_tta else 'off'}, shape={tuple(data.shape)}", flush=True)
         started = time.monotonic()
         logits = predictor.predict_logits_from_preprocessed_data(torch.from_numpy(data))
         np.save(output_path, logits.cpu().numpy(), allow_pickle=False)
-        print(f"fold_{fold}: completed in {time.monotonic() - started:.1f}s", flush=True)
+        print(f"fold_{fold}: completed in {time.monotonic() - started:.1f}s, "
+              f"{lock_wait():.1f}s waiting for the decoder lock", flush=True)
     except BaseException:
         Path(error_path).write_text(traceback.format_exc())
         raise
@@ -75,6 +100,8 @@ class ParallelFoldMixin:
     def predict_logits_from_preprocessed_data(self, data):
         allocations = assign_worker_cpus(len(self.parallel_folds))
         context = mp.get_context("spawn")
+        # Folds run in step, so without the lock their memory peaks coincide.
+        decoder_lock = context.Lock()
         # Children import torch before entering the worker. Bound those imports
         # as well; large tensors never travel through a Queue or /dev/shm.
         for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
@@ -93,7 +120,7 @@ class ParallelFoldMixin:
                     error = root / f"fold_{fold}.error"
                     process = context.Process(target=_fold_worker, args=(
                         self.parallel_model_dir, self.parallel_checkpoint_name, fold,
-                        self.use_mirroring, cpus, input_path, output, error))
+                        self.use_mirroring, cpus, input_path, output, error, decoder_lock))
                     process.start()
                     workers.append((process, fold, error))
                     paths.append(output)

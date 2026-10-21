@@ -2,11 +2,37 @@ import tempfile
 import multiprocessing as mp
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import torch
 
-from nnunet_inference.parallel import ParallelFoldMixin, assign_worker_cpus, average_fold_logits
+from nnunet_inference.parallel import (ParallelFoldMixin, assign_worker_cpus, average_fold_logits,
+                                       limit_worker_memory)
+
+
+class RecordingLock:
+    def __init__(self):
+        self.held, self.events = False, []
+
+    def acquire(self):
+        self.held = True
+        self.events.append("acquire")
+
+    def release(self):
+        self.held = False
+        self.events.append("release")
+
+
+def small_resenc_unet():
+    from dynamic_network_architectures.architectures.unet import ResidualEncoderUNet
+    torch.manual_seed(0)
+    return ResidualEncoderUNet(
+        input_channels=1, n_stages=3, features_per_stage=(4, 8, 16), conv_op=torch.nn.Conv3d,
+        kernel_sizes=3, strides=(1, 2, 2), n_blocks_per_stage=(1, 1, 1), num_classes=2,
+        n_conv_per_stage_decoder=(1, 1), conv_bias=True, norm_op=torch.nn.InstanceNorm3d,
+        norm_op_kwargs={"eps": 1e-5, "affine": True}, nonlin=torch.nn.LeakyReLU,
+        nonlin_kwargs={"inplace": True}, deep_supervision=False).eval()
 
 
 class ParallelTests(unittest.TestCase):
@@ -44,6 +70,35 @@ class ParallelTests(unittest.TestCase):
             np.save(a, np.full((2, 3), np.nan, dtype=np.float16))
             with self.assertRaisesRegex(RuntimeError, "Nonfinite"):
                 average_fold_logits([a])
+
+    def test_worker_keeps_one_weight_copy_and_locks_only_the_last_decoder_stage(self):
+        network = small_resenc_unet()
+        stored = {k: v.clone() for k, v in network.state_dict().items()}
+        predictor = SimpleNamespace(network=network, list_of_parameters=[stored])
+        x = torch.randn(1, 1, 8, 16, 16)
+        with torch.inference_mode():
+            expected = network(x)
+        lock = RecordingLock()
+        lock_wait = limit_worker_memory(predictor, lock)
+        params = network.state_dict()
+        self.assertTrue(all(t.data_ptr() == params[k].data_ptr()
+                            for k, t in predictor.list_of_parameters[0].items()))
+        held_at = {}
+
+        def record(name):
+            def hook(module, args, output):
+                held_at.setdefault(name, lock.held)
+            return hook
+        for i, module in enumerate(network.decoder.transpconvs):
+            module.register_forward_hook(record(f"transpconv {i}"))
+        with torch.inference_mode():
+            network.load_state_dict(predictor.list_of_parameters[0])
+            output = network(x)
+            network(x)
+        torch.testing.assert_close(output, expected, rtol=0, atol=0)
+        self.assertEqual(held_at, {"transpconv 0": False, "transpconv 1": True})
+        self.assertEqual(lock.events, ["acquire", "release"] * 2)
+        self.assertGreaterEqual(lock_wait(), 0.0)
 
     def test_worker_failure_propagates_and_cleans_children(self):
         class Harness(ParallelFoldMixin):
