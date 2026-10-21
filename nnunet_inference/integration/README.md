@@ -57,14 +57,13 @@ current Fiona base, resolve it to an immutable digest and record that digest.
 
 Before preparing a release with changed weights or checkpoint selection,
 allocate its bundle SHA-256 an unused permanent REDCap instance of at least
-2 in `../redcap_model_instances.json`. Instance 1 of the `pr2mask` instrument
-holds the original (manual) mask, and REDCap instances are filled in order, so
-model instances follow it without gaps. Unknown bundles and instance 1 fail
-closed. Never renumber allocations after a REDCap import: the large
-final-checkpoint bundle is **2**, the initial curated medium nnUNet fold-best
-bundle is **5**, and the fastMONAI models will get their numbers from the
-fastMONAI project. Preserve these allocations across the projects when adding
-future releases.
+10 in `../redcap_model_instances.json`. Instances 1-9 of the `pr2mask`
+instrument are left to the original (manual) mask and pr2mask's own region
+numbering. Unknown bundles and instances below 10 fail closed. The large
+final-checkpoint bundle is **10** and the fastMONAI DynUNet bundle is **11**.
+They moved from 2 and 3 on 2026-10-21, and results imported before that stay
+at the old instances. Don't renumber again after REDCap imports, and keep the
+allocations unique across both projects.
 
 ## CPU and memory contract
 

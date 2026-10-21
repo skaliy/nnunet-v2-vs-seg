@@ -21,7 +21,7 @@ class PacsTests(unittest.TestCase):
 
     def test_postprocessing_exports_all_five_products_with_distinct_identity(self):
         registry = json.loads(MODEL_INSTANCES_PATH.read_text())
-        large = next(digest for digest, n in registry.items() if n == 2)
+        large = next(digest for digest, n in registry.items() if n == 10)
         deployment = dict(model_type="nnunet_large", model_name="Large", bundle_sha256=large,
                           members=[dict(member_id=f"fold_{n}") for n in range(5)])
         with tempfile.TemporaryDirectory() as tmp:
@@ -48,7 +48,7 @@ class PacsTests(unittest.TestCase):
             self.assertRegex(titles.pop(), r"^nnunet_l 5-model ensemble, [A-Z][a-z]{2}\d{6} $")
             self.assertEqual({p.name for p in output.iterdir()}, set(pacs.FINAL_OUTPUTS) | {pacs.LOG_NAME})
             rows = json.loads(next((output / "redcap").glob("*/output.json")).read_text())
-            self.assertTrue(all(r["redcap_repeat_instance"] == "2" for r in rows))
+            self.assertTrue(all(r["redcap_repeat_instance"] == "10" for r in rows))
             self.assertEqual(len(list((output / "labels" / "1.2.8").iterdir())), 3)
             self.assertFalse((output / "vote_map").exists())
             self.assertFalse((output / "mask").exists())
