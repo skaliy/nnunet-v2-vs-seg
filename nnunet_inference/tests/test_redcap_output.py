@@ -17,6 +17,10 @@ from nnunet_inference.redcap_output import encode_mask, decode_mask, build_mask_
 from nnunet_inference import redcap_output
 from nnunet_inference.tests.synthetic import write_image as _write_test_image
 
+DICTIONARY_HEADER = 'Variable / Field Name,Form Name,Field Type,Field Label\n'
+DICTIONARY_ROWS = ('mask_base64_gzip_compressed,pr2mask,text,mask_base64_gzip_compressed\n'
+                   'number_of_pixel,pr2mask,text,Number of pixel\nphysical_size,pr2mask,text,Physical size\n')
+PR2MASK_COLUMNS = {'mask_base64_gzip_compressed', 'number_of_pixel', 'physical_size'}
 DEPLOYMENT = {'model_type': 'nnunet_large', 'bundle_sha256': 'e91f17a3af1621a773a562ba12e426404322119234b91195fc8ef9382b0e79cc', 'members': [{'member_id': f'fold_{n}'} for n in range(5)]}
 
 
@@ -39,13 +43,22 @@ def fixture(root, empty=False):
     rows = [dict(record_id='SYNTHETIC', redcap_event_name='test_arm_1', redcap_repeat_instrument='pr2mask',
                  redcap_repeat_instance=str(i), field_name=name, value=value)
             for i, size in [(1, '20'), (2, '50'), (3, '50')]
-            for name, value in [('number_of_pixel', size), ('physical_size', f'{size}.{i}')]]
+            for name, value in [('mask_base64_gzip_compressed', f'm{i}'), ('number_of_pixel', size), ('physical_size', f'{size}.{i}')]]
     (report/'output.json').write_text(json.dumps([] if empty else rows))
     with zipfile.ZipFile(report/'output_data_dictionary.zip', 'w') as z:
         z.writestr('OriginID.txt', 'PR2MASK')
-        z.writestr('instrument.csv', 'Variable / Field Name,Form Name,Field Type,Field Label\n'
-                     'number_of_pixel,pr2mask,text,Number of pixel\nphysical_size,pr2mask,text,Physical size\n')
+        # Like pr2mask, list the columns only when there is a region.
+        z.writestr('instrument.csv', DICTIONARY_HEADER + ('' if empty else DICTIONARY_ROWS))
     return source, work, mask, report, ([] if empty else rows)
+
+
+class Pr2maskDictionaryTests(unittest.TestCase):
+    def test_shipped_dictionary_lists_pr2mask_columns(self):
+        names = [row['Variable / Field Name'] for row in redcap_output.pr2mask_dictionary_rows()]
+        self.assertIn('number_of_pixel', names)
+        self.assertIn('physical_size', names)
+        self.assertEqual(len(names), len(set(names)))
+        self.assertFalse(set(names) & set(FIELDS))
 
 
 class CodecTests(unittest.TestCase):
@@ -70,6 +83,15 @@ class CodecTests(unittest.TestCase):
 
 
 class DicomExportTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        reference = Path(tmp.name)/'pr2mask_dictionary.csv'
+        reference.write_text(DICTIONARY_HEADER + DICTIONARY_ROWS)
+        patcher = patch.object(redcap_output, 'PR2MASK_DICTIONARY_PATH', reference)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_dicom_pixels_geometry_rows_and_dictionary_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, work, mask, report, original = fixture(Path(tmp))
@@ -77,11 +99,13 @@ class DicomExportTests(unittest.TestCase):
             rows = json.loads((report/'output.json').read_text())
             values = {r['field_name']: r['value'] for r in rows}
             self.assertEqual(json.loads(values['vs_measurements_json']), [
-                {k: r[k] for k in ('redcap_repeat_instance', 'field_name', 'value')} for r in original])
-            self.assertEqual(set(values), set(FIELDS) | {'number_of_pixel', 'physical_size'})
+                {k: r[k] for k in ('redcap_repeat_instance', 'field_name', 'value')} for r in original
+                if r['field_name'] != 'mask_base64_gzip_compressed'])
+            self.assertEqual(set(values), set(FIELDS) | PR2MASK_COLUMNS)
             self.assertEqual(len(rows), len(values))
             # Regions 2 and 3 tie on size: the lower region number fills the columns.
             self.assertEqual((values['number_of_pixel'], values['physical_size']), ('50', '50.2'))
+            self.assertEqual(values['mask_base64_gzip_compressed'], 'm2')
             payload = json.loads(values['vs_mask_json'])
             np.testing.assert_array_equal(decode_mask(payload), mask)
             self.assertEqual(payload['geometry']['image_positions_patient'], [[0,12,31],[2,12,31],[5,12,31]])
@@ -108,7 +132,12 @@ class DicomExportTests(unittest.TestCase):
             self.assertEqual(rows[0]['record_id'], 'SYNTHETIC')
             self.assertEqual(rows[0]['redcap_event_name'], 'test_arm_1')
             values = {r['field_name']: r['value'] for r in rows}
+            self.assertEqual(set(values), set(FIELDS) | PR2MASK_COLUMNS)
             self.assertEqual((values['number_of_pixel'], values['physical_size']), ('', ''))
+            self.assertEqual(values['mask_base64_gzip_compressed'], '')
+            with zipfile.ZipFile(report/'output_data_dictionary.zip') as z:
+                fields = [r['Variable / Field Name'] for r in csv.DictReader(io.StringIO(z.read('instrument.csv').decode()))]
+            self.assertEqual(fields, ['mask_base64_gzip_compressed', 'number_of_pixel', 'physical_size', *FIELDS])
             np.testing.assert_array_equal(decode_mask(json.loads(next(r['value'] for r in rows if r['field_name']=='vs_mask_json'))), mask)
 
     def test_models_have_distinct_destinations_and_reruns_replace_complete_result(self):

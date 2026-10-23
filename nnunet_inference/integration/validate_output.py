@@ -14,7 +14,8 @@ from pydicom import dcmread
 from pydicom.uid import UID
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from nnunet_inference.redcap_output import FIELDS, _largest_region, _series, build_mask_payload, decode_mask, model_repeat_instance
+from nnunet_inference.redcap_output import (FIELDS, _largest_region, _series, build_mask_payload, decode_mask,
+                                            model_repeat_instance, pr2mask_dictionary_rows, PR2MASK_MASK_PREFIX)
 
 EXPECTED_OUTPUTS = ("fused", "fused_vote_map", "reports", "labels", "redcap")
 
@@ -134,8 +135,14 @@ def validate(input_dir, output_dir):
         dictionary = list(csv.DictReader(io.StringIO(archive.read("instrument.csv").decode("utf-8-sig"))))
     if set(values) != {row["Variable / Field Name"] for row in dictionary}:
         raise RuntimeError("REDCap fields differ from the dictionary")
+    columns = [row["Variable / Field Name"] for row in dictionary if row["Variable / Field Name"] not in FIELDS]
+    if columns != [row["Variable / Field Name"] for row in pr2mask_dictionary_rows()]:
+        raise RuntimeError("pr2mask columns differ from pr2mask_dictionary.csv; regenerate it from this run")
+    if any(m["field_name"].startswith(PR2MASK_MASK_PREFIX) for m in measurements):
+        raise RuntimeError("pr2mask mask fields belong in the columns, not the measurement list")
     largest = _largest_region(measurements)
-    if any(values[name] != largest.get(name, "") for name in set(values) - set(FIELDS)):
+    listed = {name for name in set(values) - set(FIELDS) if not name.startswith(PR2MASK_MASK_PREFIX)}
+    if any(values[name] != largest.get(name, "") for name in listed):
         raise RuntimeError("pr2mask columns differ from the largest region")
 
     print(

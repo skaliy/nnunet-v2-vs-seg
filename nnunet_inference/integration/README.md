@@ -129,9 +129,18 @@ and ordered per-slice positions. Read it using
 `nnunet_inference.redcap_output.decode_mask`. Measurements are one complete
 JSON list, preserving their original region numbers inside that list. pr2mask's
 own measurement columns are filled from the largest region (most voxels; ties
-keep the lower region number) in the model instance, and sent blank when the
-mask is empty, so the importer must overwrite blanks to clear old values. A
-same-bundle rerun replaces its permanent model instance; different bundles use
+keep the lower region number) in the model instance. An empty mask has no
+regions, so pr2mask lists no columns; the exporter then takes them from
+`pr2mask_dictionary.csv` and sends them blank, and the importer must overwrite
+blanks to clear old values. Since the Fiona base of 2026-10-19, pr2mask also
+stores each region's mask in seven `mask_*` fields. These fill the columns for
+the largest region but are left out of the measurement list: the mask alone is
+about 84,000 characters for a 512×512×120 scan, and REDCap cuts values longer
+than 65,535 characters, so it only decodes for small volumes. `vs_mask_json`
+holds the lossless mask in about 22,000 characters. `pr2mask_dictionary.csv`
+holds the `instrument.csv` rows (without the `vs_*` fields) of a non-empty run
+of the packaged pr2mask. When the Fiona base changes, regenerate it from the
+smoke test; `validate_output.py` fails while it differs. A same-bundle rerun replaces its permanent model instance; different bundles use
 different instances. `output_data_dictionary.zip` extends the pr2mask instrument.
 Install the added fields in the receiving project and ensure its importer
 honors numeric repeat instances. The container writes export files; live

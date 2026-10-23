@@ -41,7 +41,7 @@ PYTHONPATH="${PROJECT_ROOT}" "${PYTHON_BIN}" -c \
 rm -rf model _pkg
 mv "${stage_dir}/model" model
 mkdir -p _pkg/nnunet_inference
-for module in __init__.py __main__.py dicom_io.py predictor.py pipeline.py parallel.py deployment.py pacs.py redcap_output.py redcap_model_instances.json; do
+for module in __init__.py __main__.py dicom_io.py predictor.py pipeline.py parallel.py deployment.py pacs.py redcap_output.py redcap_model_instances.json pr2mask_dictionary.csv; do
     cp "${PACKAGE_SRC}/${module}" "_pkg/nnunet_inference/${module}"
 done
 if [ "${mode}" = --stage-only ]; then
