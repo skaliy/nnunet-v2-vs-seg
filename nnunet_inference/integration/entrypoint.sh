@@ -1,5 +1,7 @@
 #!/bin/bash --login
 # /data/input -> nnU-Net ResEnc-M or ResEnc-L -> pr2mask + REDCap -> /output
+# ROR exposes the JSON passed with -envs as ROR_CONT_OPTIONS:
+#   ror trigger ... -envs '{"tta":false}'
 set -euo pipefail
 
 model_type="$(jq -r .model_type "${NNUNET_MODEL_DIR:-/app/model}/deployment_manifest.json")"
@@ -10,7 +12,9 @@ if ! jq -e --arg model_type "${model_type}" 'type == "object"
     and (if has("model-type") then .["model-type"] == $model_type else true end)
     and (if has("tta") then (.tta | type == "boolean") else true end)' \
     >/dev/null <<< "${ror_options}"; then
-    echo "Error: ROR_CONT_OPTIONS supports model-type=\"${model_type}\" and Boolean tta" >&2
+    printf 'Error: invalid ROR_CONT_OPTIONS: %s\n' "${ror_options}" >&2
+    printf 'Use {} or {"tta":true} (TTA on, the default) or {"tta":false}. Optional "model-type" must be "%s".\n' \
+        "${model_type}" >&2
     exit 2
 fi
 tta_arg=--tta

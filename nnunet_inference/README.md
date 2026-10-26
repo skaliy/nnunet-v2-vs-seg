@@ -22,6 +22,8 @@ averages the original and one copy flipped inferior-superior and
 anterior-posterior together (nnU-Net axes 0 and 1), two forward passes per fold.
 `--parallel-folds --device cpu` runs selected folds concurrently with three
 threads per fold; the PACS container uses this mode with all five folds.
+A lock lets one fold at a time run the full-resolution decoder stage, where
+memory peaks, so the peaks of the folds do not add up.
 
 The pipeline reorients inputs to the LPS storage orientation used during
 training, predicts synchronously with nnU-Net, maps outputs back to the native

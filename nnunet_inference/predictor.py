@@ -1,10 +1,21 @@
 """Model loading and one-case nnU-Net prediction for VS segmentation."""
+import copy
 from pathlib import Path
 
+import numpy as np
 import torch
+from scipy.ndimage import distance_transform_edt
 
 
 FIVE_FOLDS = (0, 1, 2, 3, 4)
+
+# The mask is restored to the input grid by interpolating each label's signed
+# distance to its edge with this spline order, then taking the label a voxel
+# lies deepest inside. nnU-Net's own export copies the nearest 1.5 mm model
+# slice instead (order_z=0), which repeats every third slice of 1.0 mm input.
+# On the 18 held-out 1.0 mm cases cubic beat linear (Dice 0.886 vs 0.883) and
+# shrank volumes less (-5.0% vs -7.3% against manual).
+MASK_INTERPOLATION_ORDER = 3
 
 # TTA averages the original and one copy flipped along both of these axes at
 # once: nnU-Net axis 0 (inferior-superior, the slice axis of the LPS inputs)
@@ -201,16 +212,82 @@ def build_predictor(model_dir, device="auto",
     return predictor
 
 
+def _signed_depth(mask, spacing, margin=8):
+    """Signed distance to the mask edge in mm: positive inside, negative outside.
+
+    Computed on the mask's bounding box plus margin voxels, which is wide
+    enough for cubic interpolation to match a full-volume distance map. Voxels
+    outside the box get a value below every value inside it, so they stay
+    outside.
+    """
+    outside = -4.0 * float(max(spacing))
+    if not mask.any():
+        return np.full(mask.shape, outside, dtype=np.float32)
+    if mask.all():
+        return np.full(mask.shape, -outside, dtype=np.float32)
+    coords = np.argwhere(mask)
+    lo = np.maximum(coords.min(0) - margin, 0)
+    hi = np.minimum(coords.max(0) + margin + 1, mask.shape)
+    box = tuple(slice(a, b) for a, b in zip(lo, hi))
+    inner = mask[box]
+    inner_depth = (distance_transform_edt(inner, sampling=spacing)
+                   - distance_transform_edt(~inner, sampling=spacing))
+    depth = np.full(mask.shape, min(outside, float(inner_depth.min())), dtype=np.float32)
+    depth[box] = inner_depth
+    return depth
+
+
+def shape_based_segmentation(predictor, logits, properties):
+    """Restore the segmentation to the input grid with shape-based interpolation.
+
+    The argmax on the model grid is turned into one signed distance map per
+    label and resampled with nnU-Net's export resampling at
+    MASK_INTERPOLATION_ORDER. Each voxel takes the label it lies deepest
+    inside, so a slice between two model slices gets an outline between
+    theirs instead of a copy of the nearer one.
+    """
+    from nnunetv2.inference.export_prediction import (
+        convert_predicted_logits_to_segmentation_with_correct_shape,
+    )
+    from nnunetv2.utilities.plans_handling.plans_handler import ConfigurationManager
+
+    label_manager = predictor.label_manager
+    if label_manager.has_regions:
+        raise ValueError("Shape-based mask restoration needs a label-based model")
+    labels = np.asarray(label_manager.convert_logits_to_segmentation(logits))
+    spacing = predictor.configuration_manager.spacing
+    if len(spacing) != labels.ndim:
+        raise ValueError(f"Model spacing {spacing} does not match a {labels.ndim}D prediction")
+    # Background scores 0, so a voxel outside every label stays background.
+    scores = np.zeros((len(label_manager.all_labels), *labels.shape), dtype=np.float32)
+    for channel, value in enumerate(label_manager.all_labels):
+        if value != 0:
+            scores[channel] = _signed_depth(labels == value, spacing)
+    configuration = copy.deepcopy(predictor.configuration_manager.configuration)
+    configuration["resampling_fn_probabilities_kwargs"].update(
+        order=MASK_INTERPOLATION_ORDER, order_z=MASK_INTERPOLATION_ORDER)
+    return convert_predicted_logits_to_segmentation_with_correct_shape(
+        torch.from_numpy(scores), predictor.plans_manager,
+        ConfigurationManager(configuration), label_manager, properties)
+
+
 def predict(predictor, in_nifti_dir, out_dir):
     """Run one-case prediction, saving segmentation and probabilities.
 
-    The PACS service always submits one case. Use nnU-Net's synchronous
-    single-array API so the full preprocessed volume is not transferred
-    through a multiprocessing queue. Docker's default 64 MB shared-memory
-    mount is too small for that transfer and kills predict_from_files workers.
+    The PACS service always submits one case. Preprocess with nnU-Net's
+    synchronous single-array adapter so the full preprocessed volume is not
+    transferred through a multiprocessing queue. Docker's default 64 MB
+    shared-memory mount is too small for that transfer and kills
+    predict_from_files workers. The probabilities use nnU-Net's own export;
+    the segmentation uses shape_based_segmentation.
 
     Returns (seg_nifti_path, prob_npz_path).
     """
+    from nnunetv2.inference.data_iterators import PreprocessAdapterFromNpy
+    from nnunetv2.inference.export_prediction import (
+        convert_predicted_logits_to_segmentation_with_correct_shape,
+    )
+
     in_nifti_dir = Path(in_nifti_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -227,12 +304,24 @@ def predict(predictor, in_nifti_dir, out_dir):
 
     reader_writer = predictor.plans_manager.image_reader_writer_class()
     image, properties = reader_writer.read_images([str(input_file)])
-    predictor.predict_single_npy_array(
-        input_image=image,
-        image_properties=properties,
-        segmentation_previous_stage=None,
-        output_file_truncated=str(output_truncated),
-        save_or_return_probabilities=True,
+    preprocessed = next(PreprocessAdapterFromNpy(
+        [image], [None], [properties], [None], predictor.plans_manager,
+        predictor.dataset_json, predictor.configuration_manager,
+        num_threads_in_multithreaded=1, verbose=predictor.verbose,
+    ))
+    data_properties = preprocessed["data_properties"]
+    logits = predictor.predict_logits_from_preprocessed_data(preprocessed["data"]).cpu()
+
+    _, probabilities = convert_predicted_logits_to_segmentation_with_correct_shape(
+        logits, predictor.plans_manager, predictor.configuration_manager,
+        predictor.label_manager, data_properties, return_probabilities=True,
+    )
+    np.savez_compressed(f"{output_truncated}.npz", probabilities=probabilities)
+    del probabilities
+    segmentation = shape_based_segmentation(predictor, logits, data_properties)
+    reader_writer.write_seg(
+        segmentation, f"{output_truncated}{predictor.dataset_json['file_ending']}",
+        data_properties,
     )
 
     seg = sorted(p for p in out_dir.glob("*.nii.gz"))

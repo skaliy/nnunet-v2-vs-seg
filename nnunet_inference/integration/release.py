@@ -18,6 +18,15 @@ def inspect(image):
     return json.loads(subprocess.check_output(["docker", "image", "inspect", image]))[0]
 
 
+def ror_select_entry(image_tag):
+    return f'''"ENTRY_NAME": {{
+  "select": "<VS CE-T1 series selector>",
+  "ROR_CONT_OPTIONS": "{{}}",
+  "docker_image": "{image_tag}"
+}},
+'''
+
+
 def handoff_readme(image_tag, repeat_instance, manifest):
     version = image_tag.rsplit(":", 1)[-1]
     return f'''# nnU-Net PACS handoff — {version}
@@ -29,8 +38,32 @@ Image: `{image_tag}` (`latest` is also included).
 
 Defaults: **TTA on** (original plus one copy flipped inferior-superior and
 anterior-posterior together), five parallel
-folds, **three CPU threads per fold**.
-Disable TTA with `ROR_CONT_OPTIONS='{{"tta":false}}'`.
+folds, **three CPU threads per fold**. No options are needed.
+Qualified with 16 CPUs and 64 GiB memory.
+
+```bash
+# TTA on (default)
+ror trigger -cont {image_tag} -each
+# TTA off
+ror trigger -cont {image_tag} -each -envs '{{"tta":false}}'
+```
+
+`-envs` sets `ROR_CONT_OPTIONS`, a JSON object: `tta` must be a bare `true` or
+`false` without quotes, and `model-type` is optional (`{manifest["model_type"]}`).
+Anything else, including `""`, is rejected before inference.
+
+As a ror workflow, add this entry to the select statements. It is also in
+`ror_select_entry.txt` for copying. Replace `ENTRY_NAME` with the workflow `name`
+in the PACS `config.json` and fill in the series selector:
+
+```json
+{ror_select_entry(image_tag)}```
+
+`"{{}}"` runs the defaults. Use `"{{\\"tta\\":false}}"` to turn TTA off. Don't write `"\\"\\""`
+here: that passes two quote characters and is rejected.
+
+Without ror, mount the input and output folders and pass the options with
+`-e ROR_CONT_OPTIONS='{{"tta":false}}'` if needed:
 
 ```bash
 docker run --rm \\
@@ -80,6 +113,7 @@ def main():
     (release / "release.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
     (release / "README.md").write_text(handoff_readme(
         args.image_tag, state["redcap_repeat_instance"], manifest))
+    (release / "ror_select_entry.txt").write_text(ror_select_entry(args.image_tag))
 
 
 if __name__ == "__main__":

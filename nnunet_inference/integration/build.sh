@@ -8,7 +8,7 @@ readonly PROJECT_ROOT="$(cd ../.. && pwd)"
 readonly NNUNET_MODEL="${NNUNET_MODEL:-large}"
 case "${NNUNET_MODEL}" in
     medium) plans=nnUNetResEncUNetMPlans; default_image=nnunet-vsseg-5fold ;;
-    large) plans=nnUNetResEncUNetLPlans; default_image=nnunet-vsseg-large-5fold ;;
+    large) plans=nnUNetResEncUNetLPlans; default_image=nnunet-vsseg ;;
     *) echo 'Error: NNUNET_MODEL must be medium or large' >&2; exit 2 ;;
 esac
 readonly MODEL_SRC="${NNUNET_MODEL_SRC:-${PROJECT_ROOT}/nnUNet_data/nnUNet_results/Dataset003_VSSegmentationCurated/nnUNetTrainer__${plans}__3d_fullres}"
@@ -41,7 +41,7 @@ PYTHONPATH="${PROJECT_ROOT}" "${PYTHON_BIN}" -c \
 rm -rf model _pkg
 mv "${stage_dir}/model" model
 mkdir -p _pkg/nnunet_inference
-for module in __init__.py __main__.py dicom_io.py predictor.py pipeline.py parallel.py deployment.py pacs.py redcap_output.py redcap_model_instances.json; do
+for module in __init__.py __main__.py dicom_io.py predictor.py pipeline.py parallel.py deployment.py pacs.py redcap_output.py redcap_model_instances.json pr2mask_dictionary.csv; do
     cp "${PACKAGE_SRC}/${module}" "_pkg/nnunet_inference/${module}"
 done
 if [ "${mode}" = --stage-only ]; then

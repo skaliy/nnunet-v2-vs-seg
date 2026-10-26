@@ -2,12 +2,12 @@
 
 Each image packages one trained **Dataset003_VSSegmentationCurated** model,
 numeric folds 0–4 with `3d_fullres`: large ResEnc-L (`NNUNET_MODEL=large`,
-the default, image `nnunet-vsseg-large-5fold`) or medium ResEnc-M
+the default, image `nnunet-vsseg`) or medium ResEnc-M
 (`NNUNET_MODEL=medium`, image `nnunet-vsseg-5fold`). Large is the PACS model:
 under 16 CPUs it is faster than medium and had the fewest false positives. Each fold uses its
 final checkpoint by default, as nnU-Net does and as in the cross-validation
-results. `NNUNET_CHECKPOINT=best` selects fold-best checkpoints; the registered
-medium bundle (instance 5) was built that way. The previous Dataset002 ResEnc-L
+results. `NNUNET_CHECKPOINT=best` selects fold-best checkpoints. Medium is not deployed and
+has no REDCap instance, so a medium build stops until one is registered. The previous Dataset002 ResEnc-L
 images and release archives are retained for rollback.
 
 The container follows fastMONAI's PACS output and REDCap contract. It keeps
@@ -57,13 +57,13 @@ current Fiona base, resolve it to an immutable digest and record that digest.
 
 Before preparing a release with changed weights or checkpoint selection,
 allocate its bundle SHA-256 an unused permanent REDCap instance of at least
-2 in `../redcap_model_instances.json`. Instance 1 of the `pr2mask` instrument
-holds the original (manual) mask, and REDCap instances are filled in order, so
-model instances follow it without gaps. Unknown bundles and instance 1 fail
-closed. Never renumber existing allocations: fastMONAI UNet is 2, DynUNet is 3,
-4 is reserved for the next fastMONAI model, the initial curated medium
-nnUNet fold-best bundle is **5** and the large final-checkpoint bundle is **6**. Preserve these allocations across the
-projects when adding future releases.
+10 in `../redcap_model_instances.json`. Instances 1-9 of the `pr2mask`
+instrument are left to the original (manual) mask and pr2mask's own region
+numbering. Unknown bundles and instances below 10 fail closed. The large
+final-checkpoint bundle is **10** and the fastMONAI DynUNet bundle is **11**.
+They moved from 2 and 3 on 2026-10-21, and results imported before that stay
+at the old instances. Don't renumber again after REDCap imports, and keep the
+allocations unique across both projects.
 
 ## CPU and memory contract
 
@@ -73,13 +73,19 @@ caps affinity to 16 available logical CPUs; at least 15 are required. The
 preprocessed volume and fold results use disk-backed NumPy buffers rather than
 multiprocessing queues, avoiding Docker's default 64 MiB shared-memory limit.
 
+Each worker keeps one copy of its weights. A lock shared by the workers lets one
+fold at a time run the full-resolution decoder stage, where a forward pass peaks
+in memory. Without it the folds run in step and their peaks add up. On the
+120-slice qualification case this lowers the peak from 31.7 to 20.8 GiB at the
+same speed, with bit-identical logits.
+
 Enforce **16 CPU threads and 64 GiB**, with no additional swap allowance:
 
 ```bash
 docker run --rm --cpus 16 --memory 64g --memory-swap 64g \
   -e ROR_CONT_OPTIONS='{"tta":true}' \
   -v /absolute/path/dicom:/data/input:ro \
-  -v /absolute/path/empty-output:/output nnunet-vsseg-large-5fold:<VERSION>
+  -v /absolute/path/empty-output:/output nnunet-vsseg:<VERSION>
 ```
 
 For fixed host CPU selection, also pass `--cpuset-cpus` with 16 allowed logical
@@ -88,11 +94,19 @@ launcher; memory limits cannot be encoded in a Dockerfile.
 
 ## Runtime options and outputs
 
+No options are needed. ROR passes the JSON given with `-envs` as `ROR_CONT_OPTIONS`:
+
+```bash
+ror trigger -cont nnunet-vsseg:<VERSION> -each
+ror trigger -cont nnunet-vsseg:<VERSION> -each -envs '{"tta":false}'
+```
+
 `ROR_CONT_OPTIONS` supports `model-type` and `tta` (a JSON Boolean).
 `model-type` is optional and must name the packaged model (`nnunet_medium` or
 `nnunet_large`). **TTA is enabled** by default, as in fastMONAI. TTA averages the original and one copy flipped inferior-superior and anterior-posterior together.
 `{"tta":false}` disables mirror TTA. Unknown keys, other model
-types, and string/numeric TTA values are rejected before inference.
+types, string/numeric TTA values and non-objects such as `""` are rejected before
+inference; the error prints the value it received.
 
 The container returns `labels`, `fused`, `fused_vote_map`, `reports`, `redcap`,
 `pacs_command.log` and `runtime_resources.json`. The nnU-Net `mask` and `vote_map`
@@ -113,8 +127,20 @@ deployment version, TTA and creation time. The lossless mask uses schema 1,
 bit-packing, gzip and Base64; geometry is DICOM LPS with lengths in millimetres
 and ordered per-slice positions. Read it using
 `nnunet_inference.redcap_output.decode_mask`. Measurements are one complete
-JSON list, preserving their original region numbers inside that list. A
-same-bundle rerun replaces its permanent model instance; different bundles use
+JSON list, preserving their original region numbers inside that list. pr2mask's
+own measurement columns are filled from the largest region (most voxels; ties
+keep the lower region number) in the model instance. An empty mask has no
+regions, so pr2mask lists no columns; the exporter then takes them from
+`pr2mask_dictionary.csv` and sends them blank, and the importer must overwrite
+blanks to clear old values. Since the Fiona base of 2026-10-19, pr2mask also
+stores each region's mask in seven `mask_*` fields. These fill the columns for
+the largest region but are left out of the measurement list: the mask alone is
+about 84,000 characters for a 512×512×120 scan, and REDCap cuts values longer
+than 65,535 characters, so it only decodes for small volumes. `vs_mask_json`
+holds the lossless mask in about 22,000 characters. `pr2mask_dictionary.csv`
+holds the `instrument.csv` rows (without the `vs_*` fields) of a non-empty run
+of the packaged pr2mask. When the Fiona base changes, regenerate it from the
+smoke test; `validate_output.py` fails while it differs. A same-bundle rerun replaces its permanent model instance; different bundles use
 different instances. `output_data_dictionary.zip` extends the pr2mask instrument.
 Install the added fields in the receiving project and ensure its importer
 honors numeric repeat instances. The container writes export files; live
@@ -126,7 +152,7 @@ Use a controlled DICOM fixture for full inference and a generated nonuniform
 full-sized patch for native-versus-parallel numerical regression:
 
 ```bash
-IMAGE_TAG=nnunet-vsseg-large-5fold:<VERSION> TTA=false \
+IMAGE_TAG=nnunet-vsseg:<VERSION> TTA=false \
   ./smoke-test.sh /path/to/test-dicom /tmp/nnunet-large-output
 # Repeat with TTA=true and a fresh output directory to qualify full-case TTA.
 ```
@@ -146,7 +172,7 @@ docker run --rm --network none --cpus 16 --memory 64g --memory-swap 64g \
   --entrypoint /bin/bash \
   -v "$PWD/patch_regression.py:/validation/patch_regression.py:ro" \
   -v /tmp/nnunet-patch-regression:/validation/output \
-  nnunet-vsseg-large-5fold:<VERSION> -lc \
+  nnunet-vsseg:<VERSION> -lc \
   'python /validation/patch_regression.py --output /validation/output/patch_results.json'
 ```
 
@@ -172,7 +198,7 @@ site-controlled selector for a single CE-T1 input series:
   "MMIVVestSchNNUNetLarge": {
     "select": "<PACS-ADMIN-APPROVED VS CE-T1 SERIES SELECTOR>",
     "ROR_CONT_OPTIONS": "{\"model-type\":\"nnunet_large\",\"tta\":true}",
-    "docker_image": "nnunet-vsseg-large-5fold:<QUALIFIED_VERSION>"
+    "docker_image": "nnunet-vsseg:<QUALIFIED_VERSION>"
   }
 }
 ```

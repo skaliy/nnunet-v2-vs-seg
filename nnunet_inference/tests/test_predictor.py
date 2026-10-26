@@ -2,8 +2,10 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
+import numpy as np
 import torch
 
 from nnunet_inference import predictor as predictor_module
@@ -142,8 +144,85 @@ class TestMirroringPasses(unittest.TestCase):
         torch.testing.assert_close(result, expected)
 
 
+def _ball(shape, spacing, centre_mm, radius_mm):
+    """Ball sampled at voxel centres, measured from the volume edge."""
+    grids = np.meshgrid(*[(np.arange(n) + 0.5) * s for n, s in zip(shape, spacing)],
+                        indexing="ij")
+    return sum((g - c) ** 2 for g, c in zip(grids, centre_mm)) <= radius_mm ** 2
+
+
+def _dice(a, b):
+    return 2 * (a & b).sum() / (a.sum() + b.sum())
+
+
+def _identical_neighbours(mask):
+    return sum(mask[k].any() and np.array_equal(mask[k], mask[k + 1])
+               for k in range(len(mask) - 1))
+
+
+class TestShapeBasedSegmentation(unittest.TestCase):
+    """A ball predicted on 1.5 mm slices and restored to 1.0 mm slices."""
+
+    def setUp(self):
+        from nnunetv2.utilities.label_handling.label_handling import LabelManager
+        from nnunetv2.utilities.plans_handling.plans_handler import ConfigurationManager
+
+        model_shape, self.target_shape = (16, 48, 48), (24, 48, 48)
+        centre, radius = (12.0, 9.6, 9.6), 6.0
+        # 1.5 / 0.4 is above nnU-Net's anisotropy threshold, so its export
+        # resamples the slice axis separately with order_z.
+        self.configuration = {
+            "spacing": [1.5, 0.4, 0.4],
+            "architecture": {},
+            "resampling_fn_probabilities": "resample_data_or_seg_to_shape",
+            "resampling_fn_probabilities_kwargs": {
+                "is_seg": False, "order": 1, "order_z": 0, "force_separate_z": None},
+        }
+        self.predictor = SimpleNamespace(
+            label_manager=LabelManager({"background": 0, "tumor": 1}, regions_class_order=None),
+            configuration_manager=ConfigurationManager(self.configuration),
+            plans_manager=SimpleNamespace(transpose_forward=[0, 1, 2],
+                                          transpose_backward=[0, 1, 2]),
+        )
+        self.properties = {
+            "spacing": [1.0, 0.4, 0.4],
+            "shape_after_cropping_and_before_resampling": self.target_shape,
+            "shape_before_cropping": self.target_shape,
+            "bbox_used_for_cropping": [[0, n] for n in self.target_shape],
+        }
+        ball = _ball(model_shape, (1.5, 0.4, 0.4), centre, radius)
+        self.logits = torch.from_numpy(np.stack([~ball, ball]).astype(np.float32) * 10 - 5)
+        self.truth = _ball(self.target_shape, (1.0, 0.4, 0.4), centre, radius)
+
+    def test_restores_outline_between_model_slices(self):
+        from nnunetv2.inference.export_prediction import (
+            convert_predicted_logits_to_segmentation_with_correct_shape,
+        )
+
+        shape_based = predictor_module.shape_based_segmentation(
+            self.predictor, self.logits, self.properties) > 0
+        nearest = convert_predicted_logits_to_segmentation_with_correct_shape(
+            self.logits, self.predictor.plans_manager, self.predictor.configuration_manager,
+            self.predictor.label_manager, self.properties) > 0
+
+        self.assertEqual(shape_based.shape, self.target_shape)
+        self.assertGreater(_dice(shape_based, self.truth), _dice(nearest, self.truth))
+        self.assertLess(_identical_neighbours(shape_based), _identical_neighbours(nearest))
+        self.assertLess(abs(shape_based.sum() / self.truth.sum() - 1), 0.1)
+        # The configured export resampling itself is left untouched.
+        self.assertEqual(
+            self.configuration["resampling_fn_probabilities_kwargs"]["order_z"], 0)
+
+    def test_empty_prediction_stays_empty(self):
+        empty = torch.stack([torch.ones(16, 48, 48), -torch.ones(16, 48, 48)])
+        mask = predictor_module.shape_based_segmentation(
+            self.predictor, empty, self.properties)
+        self.assertEqual(mask.shape, self.target_shape)
+        self.assertEqual(int(mask.sum()), 0)
+
+
 class TestPredictSingleCase(unittest.TestCase):
-    def test_uses_synchronous_single_array_api(self):
+    def test_writes_nnunet_probabilities_and_shape_based_mask(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source"
@@ -157,32 +236,48 @@ class TestPredictSingleCase(unittest.TestCase):
                 mock.sentinel.image,
                 {"spacing": (1, 1, 1)},
             )
-            predictor = mock.Mock()
+            reader_writer.write_seg.side_effect = (
+                lambda segmentation, path, properties: Path(path).touch())
+            predictor = mock.Mock(verbose=False, dataset_json={"file_ending": ".nii.gz"})
             predictor.plans_manager.image_reader_writer_class.return_value = (
                 reader_writer
             )
+            logits = torch.zeros(2, 2, 2, 2)
+            predictor.predict_logits_from_preprocessed_data.return_value = logits
+            preprocessed = {"data": mock.sentinel.data,
+                            "data_properties": mock.sentinel.properties}
+            probabilities = np.full((2, 2, 2, 2), 0.5, dtype=np.float32)
 
-            def write_prediction(**kwargs):
-                truncated = Path(kwargs["output_file_truncated"])
-                Path(str(truncated) + ".nii.gz").touch()
-                Path(str(truncated) + ".npz").touch()
-
-            predictor.predict_single_npy_array.side_effect = write_prediction
-
-            seg, probabilities = predictor_module.predict(
-                predictor, source, output
-            )
+            with mock.patch(
+                "nnunetv2.inference.data_iterators.PreprocessAdapterFromNpy",
+                return_value=iter([preprocessed]),
+            ) as adapter, mock.patch(
+                "nnunetv2.inference.export_prediction."
+                "convert_predicted_logits_to_segmentation_with_correct_shape",
+                return_value=(mock.sentinel.nearest_mask, probabilities),
+            ) as convert, mock.patch.object(
+                predictor_module, "shape_based_segmentation",
+                return_value=mock.sentinel.mask,
+            ) as shape_based:
+                seg, probability_file = predictor_module.predict(
+                    predictor, source, output
+                )
 
             self.assertEqual(seg, output / "VS.nii.gz")
-            self.assertEqual(probabilities, output / "VS.npz")
+            self.assertEqual(probability_file, output / "VS.npz")
+            np.testing.assert_array_equal(
+                np.load(probability_file)["probabilities"], probabilities)
             reader_writer.read_images.assert_called_once_with([str(input_file)])
-            predictor.predict_single_npy_array.assert_called_once_with(
-                input_image=mock.sentinel.image,
-                image_properties={"spacing": (1, 1, 1)},
-                segmentation_previous_stage=None,
-                output_file_truncated=str(output / "VS"),
-                save_or_return_probabilities=True,
-            )
+            self.assertEqual(adapter.call_args.args[0], [mock.sentinel.image])
+            predictor.predict_logits_from_preprocessed_data.assert_called_once_with(
+                mock.sentinel.data)
+            self.assertIs(convert.call_args.args[0], logits)
+            self.assertTrue(convert.call_args.kwargs["return_probabilities"])
+            self.assertIs(shape_based.call_args.args[1], logits)
+            self.assertIs(shape_based.call_args.args[2], mock.sentinel.properties)
+            reader_writer.write_seg.assert_called_once_with(
+                mock.sentinel.mask, str(output / "VS.nii.gz"), mock.sentinel.properties)
+            predictor.predict_single_npy_array.assert_not_called()
             predictor.predict_from_files.assert_not_called()
 
     def test_rejects_more_than_one_input_case(self):

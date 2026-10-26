@@ -21,8 +21,8 @@ class PacsTests(unittest.TestCase):
 
     def test_postprocessing_exports_all_five_products_with_distinct_identity(self):
         registry = json.loads(MODEL_INSTANCES_PATH.read_text())
-        medium = next(digest for digest, n in registry.items() if n == 5)
-        deployment = dict(model_type="nnunet_medium", model_name="Medium", bundle_sha256=medium,
+        large = next(digest for digest, n in registry.items() if n == 10)
+        deployment = dict(model_type="nnunet_large", model_name="Large", bundle_sha256=large,
                           members=[dict(member_id=f"fold_{n}") for n in range(5)])
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -39,16 +39,16 @@ class PacsTests(unittest.TestCase):
             self.assertEqual(run.call_count, 3)
             commands = [call.args[0] for call in run.call_args_list]
             self.assertEqual([command[command.index("-u") + 1] for command in commands],
-                             ["test_nnunet_medium_tta_report", "test_nnunet_medium_tta_fused",
-                              "test_nnunet_medium_tta_votemap"])
+                             ["test_nnunet_large_tta_report", "test_nnunet_large_tta_fused",
+                              "test_nnunet_large_tta_votemap"])
             self.assertEqual(commands[0][commands[0].index("-i") + 1], "test_tta")
             self.assertTrue(all("-i" not in command for command in commands[1:]))
             titles = {command[command.index("-t") + 1] for command in commands}
             self.assertEqual(len(titles), 1)
-            self.assertRegex(titles.pop(), r"^nnunet_m 5-model ensemble, [A-Z][a-z]{2}\d{6} $")
+            self.assertRegex(titles.pop(), r"^nnunet_l 5-model ensemble, [A-Z][a-z]{2}\d{6} $")
             self.assertEqual({p.name for p in output.iterdir()}, set(pacs.FINAL_OUTPUTS) | {pacs.LOG_NAME})
             rows = json.loads(next((output / "redcap").glob("*/output.json")).read_text())
-            self.assertTrue(all(r["redcap_repeat_instance"] == "5" for r in rows))
+            self.assertTrue(all(r["redcap_repeat_instance"] == "10" for r in rows))
             self.assertEqual(len(list((output / "labels" / "1.2.8").iterdir())), 3)
             self.assertFalse((output / "vote_map").exists())
             self.assertFalse((output / "mask").exists())
@@ -94,8 +94,10 @@ class PacsTests(unittest.TestCase):
 class EntrypointTests(unittest.TestCase):
     def test_boolean_options_default_and_rejections(self):
         entrypoint = Path(__file__).resolve().parents[1] / "integration/entrypoint.sh"
-        for options, expected in [("{}", "--tta"), ('{"tta":false}', "--no-tta"),
+        for options, expected in [("", "--tta"), ("{}", "--tta"), ('{"tta":true}', "--tta"),
+                                  ('{"tta":false}', "--no-tta"),
                                   ('{"model-type":"nnunet_medium","tta":true}', "--tta"),
+                                  ('""', None), ('{"tta":""}', None), ('{"--tta":""}', None),
                                   ('{"tta":"false"}', None), ('{"tta":null}', None),
                                   ('{"model-type":"large"}', None), ('{"model-type":"nnunet_large"}', None),
                                   ('{"other":1}', None),
@@ -113,6 +115,7 @@ class EntrypointTests(unittest.TestCase):
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 if expected is None:
                     self.assertNotEqual(result.returncode, 0, options)
+                    self.assertIn(f"invalid ROR_CONT_OPTIONS: {options}", result.stderr)
                 else:
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(result.stdout.splitlines(), ["-m", "nnunet_inference.pacs",

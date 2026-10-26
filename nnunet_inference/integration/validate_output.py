@@ -14,7 +14,8 @@ from pydicom import dcmread
 from pydicom.uid import UID
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from nnunet_inference.redcap_output import FIELDS, _series, build_mask_payload, decode_mask, model_repeat_instance
+from nnunet_inference.redcap_output import (FIELDS, _largest_region, _series, build_mask_payload, decode_mask,
+                                            model_repeat_instance, pr2mask_dictionary_rows, PR2MASK_MASK_PREFIX)
 
 EXPECTED_OUTPUTS = ("fused", "fused_vote_map", "reports", "labels", "redcap")
 
@@ -107,7 +108,7 @@ def validate(input_dir, output_dir):
         raise RuntimeError("Expected exactly one REDCap output.json")
     rows = json.loads(paths[0].read_text())
     values = {row["field_name"]: row["value"] for row in rows}
-    if len(rows) != len(FIELDS) or set(values) != set(FIELDS):
+    if len(rows) != len(values) or not set(FIELDS).issubset(values):
         raise RuntimeError("Unexpected REDCap fields")
     payload = json.loads(values["vs_mask_json"])
     deployment = dict(model_type=values["vs_model_type"], bundle_sha256=values["vs_bundle_sha256"],
@@ -127,12 +128,22 @@ def validate(input_dir, output_dir):
             raise RuntimeError(f"REDCap payload differs from written DICOM: {key}")
     if values["vs_prediction_id"] != expected["prediction_id"]:
         raise RuntimeError("REDCap prediction identity differs")
-    if not isinstance(json.loads(values["vs_measurements_json"]), list):
+    measurements = json.loads(values["vs_measurements_json"])
+    if not isinstance(measurements, list):
         raise RuntimeError("Invalid REDCap measurements list")
     with zipfile.ZipFile(paths[0].with_name("output_data_dictionary.zip")) as archive:
         dictionary = list(csv.DictReader(io.StringIO(archive.read("instrument.csv").decode("utf-8-sig"))))
-        if not set(FIELDS).issubset({row["Variable / Field Name"] for row in dictionary}):
-            raise RuntimeError("Missing REDCap dictionary fields")
+    if set(values) != {row["Variable / Field Name"] for row in dictionary}:
+        raise RuntimeError("REDCap fields differ from the dictionary")
+    columns = [row["Variable / Field Name"] for row in dictionary if row["Variable / Field Name"] not in FIELDS]
+    if columns != [row["Variable / Field Name"] for row in pr2mask_dictionary_rows()]:
+        raise RuntimeError("pr2mask columns differ from pr2mask_dictionary.csv; regenerate it from this run")
+    if any(m["field_name"].startswith(PR2MASK_MASK_PREFIX) for m in measurements):
+        raise RuntimeError("pr2mask mask fields belong in the columns, not the measurement list")
+    largest = _largest_region(measurements)
+    listed = {name for name in set(values) - set(FIELDS) if not name.startswith(PR2MASK_MASK_PREFIX)}
+    if any(values[name] != largest.get(name, "") for name in listed):
+        raise RuntimeError("pr2mask columns differ from the largest region")
 
     print(
         "Research-PACS DICOM and lossless REDCap validation: OK "
