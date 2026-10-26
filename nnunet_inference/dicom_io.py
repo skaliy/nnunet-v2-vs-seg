@@ -43,6 +43,11 @@ DICOM_OUTPUT_CODES = {
     "probability": 2,
 }
 
+# pr2mask draws the vote map (--votemapmax 65535 --votemapagree 0.5) blue from
+# a stored value of 0.5 * 65535 up, yellow below and transparent at 0.
+VOTE_MAP_MAX = 65535
+VOTE_MAP_BLUE = 32768
+
 
 def read_series(input_dir):
     """Read a single DICOM series as an imagedata Series (z, y, x)."""
@@ -257,7 +262,8 @@ def _write_dicom_from_nifti(nifti_path, template_dir, out_dir, output_kind,
         derivation += " (original + one flip along axes " + ",".join(
             str(axis) for axis in uid_context["tta_mirror_axes"]) + ")"
     if output_kind == "probability":
-        derivation += "; foreground probability = stored uint16 value / 65535"
+        derivation += ("; foreground probability = stored uint16 value / 65535, "
+                       "at least 32768 inside the mask and at most 32767 outside it")
     template.setDicomAttribute("DerivationDescription", derivation)
     template[:] = voxels
     out_dir = Path(out_dir)
@@ -279,13 +285,37 @@ def write_mask_dicom(mask_nifti, template_dir, out_dir, uid_context,
     )
 
 
-def write_prob_dicom(prob_nifti, template_dir, out_dir, uid_context,
-                     software_versions=None):
-    """Foreground probability -> derived uint16 DICOM vote-map series."""
+def vote_map_values(probability, inside):
+    """Scale probabilities to stored vote-map values, blue exactly where `inside` is.
+
+    The mask is restored with shape-based interpolation and the probabilities
+    linearly, so their 0.5 outlines differ slightly. Raising values inside the
+    mask to the blue threshold and lowering the rest below it keeps pr2mask's
+    blue region equal to the mask.
+    """
+    stored = np.rint(np.clip(probability, 0.0, 1.0) * VOTE_MAP_MAX)
+    stored = np.where(inside, np.maximum(stored, VOTE_MAP_BLUE),
+                      np.minimum(stored, VOTE_MAP_BLUE - 1))
+    return stored.astype(np.uint16)
+
+
+def write_prob_dicom(prob_nifti, template_dir, out_dir, uid_context, *,
+                     mask_nifti, software_versions=None):
+    """Foreground probability -> derived uint16 DICOM vote-map series.
+
+    `mask_nifti` is the mask on the same grid; see vote_map_values.
+    """
+    inside = np.asarray(Series(str(mask_nifti))) > 0
+
+    def to_voxels(probability):
+        if probability.shape != inside.shape:
+            raise ValueError(f"Probability grid {probability.shape} does not match "
+                             f"the mask grid {inside.shape}")
+        return vote_map_values(probability, inside)
+
     return _write_dicom_from_nifti(
         prob_nifti, template_dir, out_dir, "probability", uid_context,
-        lambda a: np.rint(np.clip(a, 0.0, 1.0) * 65535).astype(np.uint16),
-        software_versions=software_versions,
+        to_voxels, software_versions=software_versions,
     )
 
 PROVENANCE_KEYWORDS = ("SoftwareVersions", "SeriesDescription", "DerivationDescription")

@@ -17,6 +17,10 @@ FIVE_FOLDS = (0, 1, 2, 3, 4)
 # shrank volumes less (-5.0% vs -7.3% against manual).
 MASK_INTERPOLATION_ORDER = 3
 
+# The probabilities behind the vote map are interpolated linearly along the
+# slice axis as well, instead of copying the nearest model slice (order_z=0).
+PROBABILITY_ORDER_Z = 1
+
 # TTA averages the original and one copy flipped along both of these axes at
 # once: nnU-Net axis 0 (inferior-superior, the slice axis of the LPS inputs)
 # and axis 1 (anterior-posterior). On the 344 held-out cases this had as few or
@@ -237,6 +241,15 @@ def _signed_depth(mask, spacing, margin=8):
     return depth
 
 
+def _export_configuration(predictor, **resampling):
+    """The model configuration with other orders for nnU-Net's export resampling."""
+    from nnunetv2.utilities.plans_handling.plans_handler import ConfigurationManager
+
+    configuration = copy.deepcopy(predictor.configuration_manager.configuration)
+    configuration["resampling_fn_probabilities_kwargs"].update(resampling)
+    return ConfigurationManager(configuration)
+
+
 def shape_based_segmentation(predictor, logits, properties):
     """Restore the segmentation to the input grid with shape-based interpolation.
 
@@ -249,7 +262,6 @@ def shape_based_segmentation(predictor, logits, properties):
     from nnunetv2.inference.export_prediction import (
         convert_predicted_logits_to_segmentation_with_correct_shape,
     )
-    from nnunetv2.utilities.plans_handling.plans_handler import ConfigurationManager
 
     label_manager = predictor.label_manager
     if label_manager.has_regions:
@@ -263,12 +275,11 @@ def shape_based_segmentation(predictor, logits, properties):
     for channel, value in enumerate(label_manager.all_labels):
         if value != 0:
             scores[channel] = _signed_depth(labels == value, spacing)
-    configuration = copy.deepcopy(predictor.configuration_manager.configuration)
-    configuration["resampling_fn_probabilities_kwargs"].update(
-        order=MASK_INTERPOLATION_ORDER, order_z=MASK_INTERPOLATION_ORDER)
+    configuration = _export_configuration(
+        predictor, order=MASK_INTERPOLATION_ORDER, order_z=MASK_INTERPOLATION_ORDER)
     return convert_predicted_logits_to_segmentation_with_correct_shape(
-        torch.from_numpy(scores), predictor.plans_manager,
-        ConfigurationManager(configuration), label_manager, properties)
+        torch.from_numpy(scores), predictor.plans_manager, configuration,
+        label_manager, properties)
 
 
 def predict(predictor, in_nifti_dir, out_dir):
@@ -278,8 +289,9 @@ def predict(predictor, in_nifti_dir, out_dir):
     synchronous single-array adapter so the full preprocessed volume is not
     transferred through a multiprocessing queue. Docker's default 64 MB
     shared-memory mount is too small for that transfer and kills
-    predict_from_files workers. The probabilities use nnU-Net's own export;
-    the segmentation uses shape_based_segmentation.
+    predict_from_files workers. The probabilities use nnU-Net's own export
+    with PROBABILITY_ORDER_Z along the slice axis; the segmentation uses
+    shape_based_segmentation.
 
     Returns (seg_nifti_path, prob_npz_path).
     """
@@ -313,7 +325,8 @@ def predict(predictor, in_nifti_dir, out_dir):
     logits = predictor.predict_logits_from_preprocessed_data(preprocessed["data"]).cpu()
 
     _, probabilities = convert_predicted_logits_to_segmentation_with_correct_shape(
-        logits, predictor.plans_manager, predictor.configuration_manager,
+        logits, predictor.plans_manager,
+        _export_configuration(predictor, order_z=PROBABILITY_ORDER_Z),
         predictor.label_manager, data_properties, return_probabilities=True,
     )
     np.savez_compressed(f"{output_truncated}.npz", probabilities=probabilities)

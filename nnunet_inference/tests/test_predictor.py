@@ -213,6 +213,34 @@ class TestShapeBasedSegmentation(unittest.TestCase):
         self.assertEqual(
             self.configuration["resampling_fn_probabilities_kwargs"]["order_z"], 0)
 
+    def test_probabilities_are_interpolated_between_model_slices(self):
+        from nnunetv2.inference.export_prediction import (
+            convert_predicted_logits_to_segmentation_with_correct_shape,
+        )
+
+        def foreground(configuration):
+            _, probabilities = convert_predicted_logits_to_segmentation_with_correct_shape(
+                self.logits, self.predictor.plans_manager, configuration,
+                self.predictor.label_manager, self.properties, return_probabilities=True)
+            return probabilities[1]
+
+        def repeated_slices(probability):
+            return sum(probability[k].max() > 0.5
+                       and np.array_equal(probability[k], probability[k + 1])
+                       for k in range(len(probability) - 1))
+
+        def blended(probability):
+            return int(((probability > 0.1) & (probability < 0.9)).sum())
+
+        linear = foreground(predictor_module._export_configuration(
+            self.predictor, order_z=predictor_module.PROBABILITY_ORDER_Z))
+        nearest = foreground(self.predictor.configuration_manager)
+        self.assertEqual(linear.shape, self.target_shape)
+        # Only the slices on either side of the ball's centre stay identical.
+        self.assertLess(repeated_slices(linear), repeated_slices(nearest))
+        self.assertEqual(blended(nearest), 0)
+        self.assertGreater(blended(linear), 0)
+
     def test_empty_prediction_stays_empty(self):
         empty = torch.stack([torch.ones(16, 48, 48), -torch.ones(16, 48, 48)])
         mask = predictor_module.shape_based_segmentation(
@@ -242,6 +270,12 @@ class TestPredictSingleCase(unittest.TestCase):
             predictor.plans_manager.image_reader_writer_class.return_value = (
                 reader_writer
             )
+            configuration = {
+                "architecture": {},
+                "resampling_fn_probabilities_kwargs": {
+                    "is_seg": False, "order": 1, "order_z": 0, "force_separate_z": None},
+            }
+            predictor.configuration_manager.configuration = configuration
             logits = torch.zeros(2, 2, 2, 2)
             predictor.predict_logits_from_preprocessed_data.return_value = logits
             preprocessed = {"data": mock.sentinel.data,
@@ -273,6 +307,10 @@ class TestPredictSingleCase(unittest.TestCase):
                 mock.sentinel.data)
             self.assertIs(convert.call_args.args[0], logits)
             self.assertTrue(convert.call_args.kwargs["return_probabilities"])
+            exported = convert.call_args.args[2].configuration
+            self.assertEqual(exported["resampling_fn_probabilities_kwargs"]["order_z"],
+                             predictor_module.PROBABILITY_ORDER_Z)
+            self.assertEqual(configuration["resampling_fn_probabilities_kwargs"]["order_z"], 0)
             self.assertIs(shape_based.call_args.args[1], logits)
             self.assertIs(shape_based.call_args.args[2], mock.sentinel.properties)
             reader_writer.write_seg.assert_called_once_with(

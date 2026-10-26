@@ -100,6 +100,24 @@ class TestInputBridge(unittest.TestCase):
                 dicom_io.series_to_nifti(series, Path(tmp) / "VS.nii.gz")
 
 
+class TestVoteMapValues(unittest.TestCase):
+    def test_blue_is_exactly_the_mask(self):
+        probability = np.array([0.0, 0.2, 0.49999, 0.5, 0.9, 0.0, 0.3, 0.6, 1.0])
+        inside = np.array([False] * 5 + [True] * 4)
+        stored = dicom_io.vote_map_values(probability, inside)
+        self.assertEqual(stored.dtype, np.uint16)
+        np.testing.assert_array_equal(stored >= dicom_io.VOTE_MAP_BLUE, inside)
+        # Values already on the right side of the threshold are kept, and an
+        # outside zero stays transparent.
+        self.assertEqual(stored[:2].tolist(), [0, 13107])
+        self.assertEqual(stored[-1], 65535)
+        self.assertEqual(stored[5], dicom_io.VOTE_MAP_BLUE)
+        self.assertEqual(stored[4], dicom_io.VOTE_MAP_BLUE - 1)
+        # pr2mask draws blue from votemapagree * votemapmax up.
+        self.assertGreaterEqual(dicom_io.VOTE_MAP_BLUE, 0.5 * dicom_io.VOTE_MAP_MAX)
+        self.assertLess(dicom_io.VOTE_MAP_BLUE - 1, 0.5 * dicom_io.VOTE_MAP_MAX)
+
+
 @requires_dicom_fixture
 class TestOutputBridge(unittest.TestCase):
     """Model-free geometry/values proof for the NIfTI -> DICOM path."""
@@ -117,7 +135,7 @@ class TestOutputBridge(unittest.TestCase):
         dicom_io.series_to_nifti(series, out)
         return out
 
-    def _sitk_float_nifti_on_grid(self, arr, tmp):
+    def _sitk_float_nifti_on_grid(self, arr, tmp, name="prob.nii.gz"):
         """Write a float `arr` (z, y, x) as a NIfTI on the fixture's grid via
         SimpleITK — mirrors how prob_npz_to_nifti produces the probability NIfTI
         that the write path consumes."""
@@ -126,7 +144,7 @@ class TestOutputBridge(unittest.TestCase):
         dicom_io.series_to_nifti(series, ref)
         img = sitk.GetImageFromArray(arr)
         img.CopyInformation(sitk.ReadImage(str(ref)))
-        out = Path(tmp) / "prob.nii.gz"
+        out = Path(tmp) / name
         sitk.WriteImage(img, str(out))
         return out
 
@@ -145,20 +163,24 @@ class TestOutputBridge(unittest.TestCase):
             self.assertTrue(np.array_equal((readback > 0).astype(np.uint8), marker))
 
     def test_write_prob_dicom_scales_0_1_to_uint16(self):
-        # three uniform value regions; verified by value (orientation-independent)
-        prob = np.full(EXPECTED_SHAPE, 0.5, dtype=np.float32)
+        # uniform value regions; verified by value (orientation-independent)
+        prob = np.full(EXPECTED_SHAPE, 0.25, dtype=np.float32)
         prob[0:40] = 1.0
         prob[40:80] = 0.0
+        mask = np.zeros(EXPECTED_SHAPE, dtype=np.uint8)
+        mask[0:40] = 1
         with tempfile.TemporaryDirectory() as tmp:
             nifti = self._sitk_float_nifti_on_grid(prob, tmp)
+            mask_nifti = self._sitk_float_nifti_on_grid(mask, tmp, "mask.nii.gz")
             out_dir = Path(tmp) / "vote_map"
-            dicom_io.write_prob_dicom(nifti, FIXTURE, out_dir, UID_CONTEXT)
+            dicom_io.write_prob_dicom(nifti, FIXTURE, out_dir, UID_CONTEXT,
+                                      mask_nifti=mask_nifti)
             rb = np.asarray(dicom_io.read_series(out_dir))
             self.assertEqual(rb.dtype, np.uint16)
-            self.assertEqual(int(rb.min()), 0)        # 0.0 -> 0
-            self.assertEqual(int(rb.max()), 65535)    # 1.0 -> 65535
-            vals = np.unique(rb)
-            self.assertTrue(np.any(np.abs(vals - 32767) <= 1))  # 0.5 -> ~32767
+            values, counts = np.unique(rb, return_counts=True)
+            # 1.0 -> 65535, 0.0 -> 0, 0.25 -> 16384
+            self.assertEqual(values.tolist(), [0, 16384, 65535])
+            self.assertEqual(int(counts[-1]), int(mask.sum()))
 
     def test_save_series_pred_derives_unique_uids(self):
         mask = np.zeros(EXPECTED_SHAPE, dtype=np.uint8)
@@ -209,7 +231,7 @@ class TestOutputBridge(unittest.TestCase):
             vote_dir = Path(tmp) / "vote_map"
             tta_context = {**UID_CONTEXT, "tta": True, "tta_mirror_axes": [0, 1]}
             dicom_io.write_prob_dicom(prob_nifti, FIXTURE, vote_dir, tta_context,
-                                      software_versions=sw)
+                                      mask_nifti=mask_nifti, software_versions=sw)
             ds2 = pydicom.dcmread(str(sorted(vote_dir.iterdir())[0]),
                                   stop_before_pixels=True)
             sv2 = ds2.get("SoftwareVersions")

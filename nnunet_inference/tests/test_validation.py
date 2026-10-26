@@ -38,6 +38,7 @@ class ValidationTests(unittest.TestCase):
             mask = dicom_io.write_mask_dicom(empty, source, output / "mask", identity,
                                               software_versions=versions)
             probabilities = dicom_io.write_prob_dicom(empty, source, output / "vote_map", identity,
+                                                       mask_nifti=empty,
                                                        software_versions=versions)
             summary = dict(mask_dir=mask, vote_map_dir=probabilities, tumor_voxels=0,
                            tumor_pct=0.0, uid_context=identity)
