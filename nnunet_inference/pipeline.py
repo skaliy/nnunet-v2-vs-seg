@@ -167,7 +167,7 @@ def run_inference(input_dir, output_dir=None, *, model_dir, device="auto",
         )
         vote_map_dir = dicom_io.write_prob_dicom(
             prob_nifti, input_dir, output_dir / "vote_map", uid_context,
-            software_versions=software_versions,
+            mask_nifti=seg_nifti, software_versions=software_versions,
         )
 
         seg_arr = sitk.GetArrayFromImage(sitk.ReadImage(str(seg_nifti)))

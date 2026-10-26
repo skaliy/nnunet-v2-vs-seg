@@ -115,7 +115,11 @@ series are intermediate pr2mask inputs. pr2mask writes its own mask series to
 SoftwareVersions, DerivationDescription and a `MASK` ImageType value) is copied
 onto it before publication. Its study identity, window and UIDs stay as pr2mask
 wrote them, so the PACS files the mask with the other pr2mask outputs.
-Vote-map intensities are `round(probability * 65535)`. Empty masks may produce
+Vote-map intensities are `round(probability * 65535)`, with the probabilities
+interpolated linearly between model slices. pr2mask draws values from 32768 up
+in blue, so values inside the mask are raised to at least 32768 and values
+outside it lowered to at most 32767: the blue region is exactly the mask, and
+yellow marks voxels with some foreground probability outside it. Empty masks may produce
 an empty `reports` directory. Existing owned output directories are rejected.
 Derived DICOM UIDs bind source geometry/identities, model content, checkpoint,
 folds, TTA and release version. pr2mask identities also distinguish nnUNet
