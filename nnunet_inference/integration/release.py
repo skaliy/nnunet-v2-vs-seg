@@ -77,9 +77,10 @@ Use a fresh output folder. Outputs: `labels` (the mask), `fused`, `fused_vote_ma
 
 ## REDCap
 
-Export includes the recoverable mask, geometry, measurements and provenance,
-using **repeat instance {repeat_instance}**. Install the emitted `output_data_dictionary.zip`;
-the importer must update the supplied repeat instance.
+Export holds pr2mask's columns for the largest region (no `vs_*` fields),
+using **repeat instance {repeat_instance}** of the `pr2mask` instrument. Install the
+emitted `output_data_dictionary.zip`; the importer must update the supplied repeat
+instance. The full mask is the published `labels` series.
 '''
 
 

@@ -11,7 +11,7 @@ import tempfile
 from .deployment import MODELS, validate_deployment
 from .dicom_io import tag_pr2mask_mask
 from .pipeline import run_inference
-from .redcap_output import _series, model_repeat_instance, write_redcap_mask
+from .redcap_output import _series, model_repeat_instance, write_redcap_output
 
 FINAL_OUTPUTS = ("labels", "fused", "fused_vote_map", "reports", "redcap")
 LOG_NAME = "pacs_command.log"
@@ -87,7 +87,7 @@ def postprocess(input_dir, work_dir, output_dir, deployment, *, version,
             f"pr2mask must create exactly one mask series in {work_dir / 'labels'}; "
             f"found {len(labels)}")
     tag_pr2mask_mask(labels[0], work_dir / "mask")
-    write_redcap_mask(work_dir, input_dir, deployment, version=version, use_tta=use_tta)
+    write_redcap_output(work_dir, input_dir, deployment)
     missing = [n for n in FINAL_OUTPUTS if not (work_dir / n).is_dir()]
     if missing:
         raise RuntimeError(f"Missing required PACS products: {missing}")
