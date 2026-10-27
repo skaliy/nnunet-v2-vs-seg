@@ -125,29 +125,25 @@ Derived DICOM UIDs bind source geometry/identities, model content, checkpoint,
 folds, TTA and release version. pr2mask identities also distinguish nnUNet
 from fastMONAI bundles. Temporary inference products are removed after use.
 
-`redcap/<mask-series-UID>/output.json` contains the same fields as fastMONAI:
-`vs_mask_json`, `vs_measurements_json`, model/bundle/prediction identity,
-deployment version, TTA and creation time. The lossless mask uses schema 1,
-bit-packing, gzip and Base64; geometry is DICOM LPS with lengths in millimetres
-and ordered per-slice positions. Read it using
-`nnunet_inference.redcap_output.decode_mask`. Measurements are one complete
-JSON list, preserving their original region numbers inside that list. pr2mask's
-own measurement columns are filled from the largest region (most voxels; ties
-keep the lower region number) in the model instance. An empty mask has no
-regions, so pr2mask lists no columns; the exporter then takes them from
-`pr2mask_dictionary.csv` and sends them blank, and the importer must overwrite
-blanks to clear old values. Since the Fiona base of 2026-10-19, pr2mask also
-stores each region's mask in seven `mask_*` fields. These fill the columns for
-the largest region but are left out of the measurement list: the mask alone is
+`redcap/<mask-series-UID>/output.json` holds pr2mask's own columns only, the
+same as fastMONAI. pr2mask writes each region as its own repeat instance, which
+would collide with the model instances, so the columns are filled from the
+largest region (most voxels; ties keep the lower region number) in the model
+instance. An empty mask has no regions, so pr2mask lists no columns; the
+exporter then takes them from `pr2mask_dictionary.csv` and sends them blank,
+and the importer must overwrite blanks to clear old values. Since the Fiona
+base of 2026-10-19, pr2mask also stores the mask in seven `mask_*` fields,
+which fill the columns for the largest region. `mask_base64_gzip_compressed` is
 about 84,000 characters for a 512×512×120 scan, and REDCap cuts values longer
-than 65,535 characters, so it only decodes for small volumes. `vs_mask_json`
-holds the lossless mask in about 22,000 characters. `pr2mask_dictionary.csv`
-holds the `instrument.csv` rows (without the `vs_*` fields) of a non-empty run
-of the packaged pr2mask. When the Fiona base changes, regenerate it from the
+than 65,535 characters, so it only decodes for small volumes; the full mask is
+the published `labels` series. Up to 20261026T134845Z the exporter also sent
+eight `vs_*` fields, among them the mask as `vs_mask_json`; they are no longer
+sent. `pr2mask_dictionary.csv` holds the `instrument.csv` rows of a non-empty
+run of the packaged pr2mask. When the Fiona base changes, regenerate it from the
 smoke test; `validate_output.py` fails while it differs. A same-bundle rerun replaces its permanent model instance; different bundles use
-different instances. `output_data_dictionary.zip` extends the pr2mask instrument.
-Install the added fields in the receiving project and ensure its importer
-honors numeric repeat instances. The container writes export files; live
+different instances. `output_data_dictionary.zip` is pr2mask's instrument.
+Install it in the receiving project and ensure its importer honors numeric
+repeat instances. The container writes export files; live
 PACS-to-REDCap transfer requires separate site qualification.
 
 ## Qualification and handoff

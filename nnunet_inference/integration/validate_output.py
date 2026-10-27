@@ -14,8 +14,7 @@ from pydicom import dcmread
 from pydicom.uid import UID
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from nnunet_inference.redcap_output import (FIELDS, _largest_region, _series, build_mask_payload, decode_mask,
-                                            model_repeat_instance, pr2mask_dictionary_rows, PR2MASK_MASK_PREFIX)
+from nnunet_inference.redcap_output import model_repeat_instance, pr2mask_dictionary_rows
 
 EXPECTED_OUTPUTS = ("fused", "fused_vote_map", "reports", "labels", "redcap")
 
@@ -108,45 +107,32 @@ def validate(input_dir, output_dir):
         raise RuntimeError("Expected exactly one REDCap output.json")
     rows = json.loads(paths[0].read_text())
     values = {row["field_name"]: row["value"] for row in rows}
-    if len(rows) != len(values) or not set(FIELDS).issubset(values):
+    if len(rows) != len(values) or any(name.startswith("vs_") for name in values):
         raise RuntimeError("Unexpected REDCap fields")
-    payload = json.loads(values["vs_mask_json"])
-    deployment = dict(model_type=values["vs_model_type"], bundle_sha256=values["vs_bundle_sha256"],
-                      members=[dict(member_id=m) for m in payload["model"]["member_ids"]])
-    if deployment["model_type"] not in ("nnunet_medium", "nnunet_large"):
-        raise RuntimeError("Wrong REDCap model type")
-    instance = model_repeat_instance(deployment["bundle_sha256"])
+    resources = json.loads((Path(output_dir) / "runtime_resources.json").read_text())
+    instance = model_repeat_instance(resources["bundle_sha256"])
     if any(row["redcap_repeat_instance"] != instance or row["redcap_repeat_instrument"] != "pr2mask"
            for row in rows):
         raise RuntimeError("Incorrect REDCap model destination")
-    expected, _ = build_mask_payload(Path(output_dir) / "labels", input_dir, deployment,
-                                     version=values["vs_deployment_version"],
-                                     use_tta=values["vs_tta"] == "1")
-    np.testing.assert_array_equal(decode_mask(payload), decode_mask(expected))
-    for key in ("geometry", "source", "model", "mask_series_uid", "prediction_id"):
-        if payload[key] != expected[key]:
-            raise RuntimeError(f"REDCap payload differs from written DICOM: {key}")
-    if values["vs_prediction_id"] != expected["prediction_id"]:
-        raise RuntimeError("REDCap prediction identity differs")
-    measurements = json.loads(values["vs_measurements_json"])
-    if not isinstance(measurements, list):
-        raise RuntimeError("Invalid REDCap measurements list")
+    if len({(row["record_id"], row["redcap_event_name"]) for row in rows}) != 1:
+        raise RuntimeError("Mixed REDCap destinations")
     with zipfile.ZipFile(paths[0].with_name("output_data_dictionary.zip")) as archive:
         dictionary = list(csv.DictReader(io.StringIO(archive.read("instrument.csv").decode("utf-8-sig"))))
-    if set(values) != {row["Variable / Field Name"] for row in dictionary}:
+    columns = [row["Variable / Field Name"] for row in dictionary]
+    if list(values) != columns:
         raise RuntimeError("REDCap fields differ from the dictionary")
-    columns = [row["Variable / Field Name"] for row in dictionary if row["Variable / Field Name"] not in FIELDS]
     if columns != [row["Variable / Field Name"] for row in pr2mask_dictionary_rows()]:
         raise RuntimeError("pr2mask columns differ from pr2mask_dictionary.csv; regenerate it from this run")
-    if any(m["field_name"].startswith(PR2MASK_MASK_PREFIX) for m in measurements):
-        raise RuntimeError("pr2mask mask fields belong in the columns, not the measurement list")
-    largest = _largest_region(measurements)
-    listed = {name for name in set(values) - set(FIELDS) if not name.startswith(PR2MASK_MASK_PREFIX)}
-    if any(values[name] != largest.get(name, "") for name in listed):
-        raise RuntimeError("pr2mask columns differ from the largest region")
+    # The columns hold the largest region, so it can't be bigger than the published mask.
+    foreground = sum(int(np.count_nonzero(d.pixel_array)) for d in mask)
+    if foreground == 0:
+        if any(values.values()):
+            raise RuntimeError("An empty mask must send blank pr2mask columns")
+    elif not 0 < float(values["number_of_pixel"]) <= foreground:
+        raise RuntimeError("pr2mask columns do not describe a region of the published mask")
 
     print(
-        "Research-PACS DICOM and lossless REDCap validation: OK "
+        "Research-PACS DICOM and REDCap validation: OK "
         f"({len(output_series)} series, {len(output_sops)} instances)"
     )
 
