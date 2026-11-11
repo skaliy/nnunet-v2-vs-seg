@@ -36,7 +36,7 @@ trap 'rm -rf "${stage_dir}"' EXIT
 PYTHONPATH="${PROJECT_ROOT}" "${PYTHON_BIN}" -m nnunet_inference.deployment \
     --source "${MODEL_SRC}" --output "${stage_dir}/model" --checkpoint "${CHECKPOINT}"
 PYTHONPATH="${PROJECT_ROOT}" "${PYTHON_BIN}" -c \
-    'import sys; from nnunet_inference.deployment import validate_deployment; from nnunet_inference.redcap_output import model_repeat_instance; print("REDCap instance:", model_repeat_instance(validate_deployment(sys.argv[1])["bundle_sha256"]))' \
+    'import sys; from nnunet_inference.deployment import validate_deployment; from nnunet_inference.redcap_output import model_instance_base; base = model_instance_base(validate_deployment(sys.argv[1])["bundle_sha256"]); print(f"REDCap instances: {base + 1}-{base + 99}")' \
     "${stage_dir}/model"
 rm -rf model _pkg
 mv "${stage_dir}/model" model

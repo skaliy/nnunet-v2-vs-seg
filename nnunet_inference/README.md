@@ -39,7 +39,7 @@ settings.
 - `parallel.py`: CPU fold workers and native ordered logit averaging
 - `deployment.py`: inference-only medium bundle staging and integrity checks
 - `pacs.py`: PACS/pr2mask orchestration and protected output publication
-- `redcap_output.py`: pr2mask's REDCap columns and permanent model destinations
+- `redcap_output.py`: pr2mask's REDCap rows, one instance per region in the model's block
 - `integration/`: Research PACS build, release export and qualification
 
 ## Verify

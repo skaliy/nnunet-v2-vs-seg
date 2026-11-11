@@ -21,7 +21,7 @@ class PacsTests(unittest.TestCase):
 
     def test_postprocessing_exports_all_five_products_with_distinct_identity(self):
         registry = json.loads(MODEL_INSTANCES_PATH.read_text())
-        large = next(digest for digest, n in registry.items() if n == 10)
+        large = next(digest for digest, n in registry.items() if n == 100)
         deployment = dict(model_type="nnunet_large", model_name="Large", bundle_sha256=large,
                           members=[dict(member_id=f"fold_{n}") for n in range(5)])
         with tempfile.TemporaryDirectory() as tmp:
@@ -34,6 +34,7 @@ class PacsTests(unittest.TestCase):
             with patch.object(pacs.subprocess, "run") as run, \
                     patch.object(pacs, "tag_pr2mask_mask") as tag_mask:
                 pacs.postprocess(source, work, output, deployment, version="test",
+                                 container="nnunet-vsseg:test",
                                  use_tta=True, pr2mask_dir=Path("/pr2mask"))
             tag_mask.assert_called_once_with(work / "labels" / "1.2.8", work / "mask")
             self.assertEqual(run.call_count, 3)
@@ -48,7 +49,9 @@ class PacsTests(unittest.TestCase):
             self.assertRegex(titles.pop(), r"^nnunet_l 5-model ensemble, [A-Z][a-z]{2}\d{6} $")
             self.assertEqual({p.name for p in output.iterdir()}, set(pacs.FINAL_OUTPUTS) | {pacs.LOG_NAME})
             rows = json.loads(next((output / "redcap").glob("*/output.json")).read_text())
-            self.assertTrue(all(r["redcap_repeat_instance"] == "10" for r in rows))
+            self.assertEqual({r["redcap_repeat_instance"] for r in rows}, {"101", "102", "103"})
+            self.assertEqual({r["value"] for r in rows if r["field_name"] == "model_version"},
+                             {"nnunet_large 5-fold, nnunet-vsseg:test"})
             self.assertEqual(len(list((output / "labels" / "1.2.8").iterdir())), 3)
             self.assertFalse((output / "vote_map").exists())
             self.assertFalse((output / "mask").exists())
@@ -72,6 +75,7 @@ class PacsTests(unittest.TestCase):
                         patch.object(pacs, "tag_pr2mask_mask") as tag_mask:
                     with self.assertRaisesRegex(RuntimeError, "exactly one mask series"):
                         pacs.postprocess(source, work, output, deployment, version="test",
+                                         container="nnunet-vsseg:test",
                                          use_tta=True, pr2mask_dir=Path("/pr2mask"))
                 tag_mask.assert_not_called()
                 self.assertFalse(any(output.iterdir()))
@@ -87,8 +91,24 @@ class PacsTests(unittest.TestCase):
             with patch.object(pacs.subprocess, "run", side_effect=RuntimeError("tool failure")):
                 with self.assertRaisesRegex(RuntimeError, "tool failure"):
                     pacs.postprocess(source, work, output, deployment, version="test",
+                                     container="nnunet-vsseg:test",
                                      use_tta=True, pr2mask_dir=Path("/pr2mask"))
             self.assertFalse(any(output.iterdir()))
+
+
+    def test_model_version_names_model_folds_and_image(self):
+        members = [dict(member_id=f"fold_{n}") for n in range(5)]
+        self.assertEqual(pacs.model_version(dict(model_type="nnunet_large", members=members),
+                                            "nnunet-vsseg:20261111T090000Z"),
+                         "nnunet_large 5-fold, nnunet-vsseg:20261111T090000Z")
+        self.assertEqual(pacs.model_version(dict(model_type="nnunet_large", members=members[:1]), "x:1"),
+                         "nnunet_large single model, x:1")
+
+    def test_run_requires_version_and_container(self):
+        for version, container in [(None, "nnunet-vsseg:test"), ("test", None)]:
+            with self.subTest(version=version, container=container), \
+                    self.assertRaisesRegex(RuntimeError, "CONTAINER_VERSION"):
+                pacs.run_pacs("/missing", "/missing", version=version, container=container)
 
 
 class EntrypointTests(unittest.TestCase):

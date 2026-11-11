@@ -14,7 +14,8 @@ from pydicom import dcmread
 from pydicom.uid import UID
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from nnunet_inference.redcap_output import model_repeat_instance, pr2mask_dictionary_rows
+from nnunet_inference.redcap_output import (
+    INSTRUMENT, MODEL_VERSION_FIELD, model_instance_base, pr2mask_dictionary_rows)
 
 EXPECTED_OUTPUTS = ("fused", "fused_vote_map", "reports", "labels", "redcap")
 
@@ -106,30 +107,43 @@ def validate(input_dir, output_dir):
     if len(paths) != 1:
         raise RuntimeError("Expected exactly one REDCap output.json")
     rows = json.loads(paths[0].read_text())
-    values = {row["field_name"]: row["value"] for row in rows}
-    if len(rows) != len(values) or any(name.startswith("vs_") for name in values):
+    if any(row["field_name"].startswith("vs_") for row in rows):
         raise RuntimeError("Unexpected REDCap fields")
-    resources = json.loads((Path(output_dir) / "runtime_resources.json").read_text())
-    instance = model_repeat_instance(resources["bundle_sha256"])
-    if any(row["redcap_repeat_instance"] != instance or row["redcap_repeat_instrument"] != "pr2mask"
-           for row in rows):
-        raise RuntimeError("Incorrect REDCap model destination")
+    if any(row["redcap_repeat_instrument"] != INSTRUMENT for row in rows):
+        raise RuntimeError("Incorrect REDCap instrument")
     if len({(row["record_id"], row["redcap_event_name"]) for row in rows}) != 1:
         raise RuntimeError("Mixed REDCap destinations")
+    instances = {}
+    for row in rows:
+        values = instances.setdefault(row["redcap_repeat_instance"], {})
+        if row["field_name"] in values:
+            raise RuntimeError("Duplicate REDCap field in one instance")
+        values[row["field_name"]] = row["value"]
+    resources = json.loads((Path(output_dir) / "runtime_resources.json").read_text())
+    base = model_instance_base(resources["bundle_sha256"])
+    if sorted(instances, key=int) != [str(base + k) for k in range(1, len(instances) + 1)]:
+        raise RuntimeError(f"REDCap instances must be {base + 1}, {base + 2}, ...: {sorted(instances)}")
     with zipfile.ZipFile(paths[0].with_name("output_data_dictionary.zip")) as archive:
         dictionary = list(csv.DictReader(io.StringIO(archive.read("instrument.csv").decode("utf-8-sig"))))
     columns = [row["Variable / Field Name"] for row in dictionary]
-    if list(values) != columns:
+    if any(list(values) != columns for values in instances.values()):
         raise RuntimeError("REDCap fields differ from the dictionary")
-    if columns != [row["Variable / Field Name"] for row in pr2mask_dictionary_rows()]:
+    if [c for c in columns if c != MODEL_VERSION_FIELD] != [
+            row["Variable / Field Name"] for row in pr2mask_dictionary_rows()]:
         raise RuntimeError("pr2mask columns differ from pr2mask_dictionary.csv; regenerate it from this run")
-    # The columns hold the largest region, so it can't be bigger than the published mask.
+    versions = {values[MODEL_VERSION_FIELD] for values in instances.values()}
+    if len(versions) != 1 or not versions.pop():
+        raise RuntimeError("Every REDCap instance needs the same model_version")
+    # Each region of the published mask has its own instance.
     foreground = sum(int(np.count_nonzero(d.pixel_array)) for d in mask)
+    measured = [values for values in instances.values()
+                if any(v for k, v in values.items() if k != MODEL_VERSION_FIELD)]
     if foreground == 0:
-        if any(values.values()):
-            raise RuntimeError("An empty mask must send blank pr2mask columns")
-    elif not 0 < float(values["number_of_pixel"]) <= foreground:
-        raise RuntimeError("pr2mask columns do not describe a region of the published mask")
+        if measured or len(instances) != 1:
+            raise RuntimeError("An empty mask must send one instance with blank pr2mask columns")
+    elif (len(measured) != len(instances)
+          or sum(int(values["number_of_pixel"]) for values in measured) != foreground):
+        raise RuntimeError("REDCap regions do not add up to the published mask")
 
     print(
         "Research-PACS DICOM and REDCap validation: OK "

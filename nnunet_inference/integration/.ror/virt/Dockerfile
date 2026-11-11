@@ -46,6 +46,6 @@ RUN chmod 0755 /app/entrypoint.sh && \
     test -x /pr2mask/imageAndMask2Report && \
     test -x /pr2mask/imageAndMask2Fused && \
     python -m nnunet_inference.deployment --output /app/model --verify-only --verify-runtime && \
-    python -c "from nnunet_inference.deployment import validate_deployment; from nnunet_inference.redcap_output import model_repeat_instance; model_repeat_instance(validate_deployment('/app/model')['bundle_sha256'])"
+    python -c "from nnunet_inference.deployment import validate_deployment; from nnunet_inference.redcap_output import model_instance_base; model_instance_base(validate_deployment('/app/model')['bundle_sha256'])"
 
 ENTRYPOINT ["/app/entrypoint.sh"]

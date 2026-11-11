@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 from pydicom import dcmread
 
-from nnunet_inference.redcap_output import write_redcap_output, model_repeat_instance
+from nnunet_inference.redcap_output import write_redcap_output, model_instance_base
 from nnunet_inference import redcap_output
 from nnunet_inference.tests.synthetic import write_image as _write_test_image
 
@@ -19,6 +19,8 @@ DICTIONARY_ROWS = ('mask_base64_gzip_compressed,pr2mask,text,mask_base64_gzip_co
                    'number_of_pixel,pr2mask,text,Number of pixel\nphysical_size,pr2mask,text,Physical size\n')
 PR2MASK_COLUMNS = ['mask_base64_gzip_compressed', 'number_of_pixel', 'physical_size']
 ROUTING = ('record_id', 'redcap_event_name', 'redcap_repeat_instrument', 'redcap_repeat_instance')
+FIELDS = PR2MASK_COLUMNS + ['model_version']
+VERSION = 'nnunet_large 5-fold, nnunet-vsseg:test'
 DEPLOYMENT = {'model_type': 'nnunet_large', 'bundle_sha256': 'e91f17a3af1621a773a562ba12e426404322119234b91195fc8ef9382b0e79cc', 'members': [{'member_id': f'fold_{n}'} for n in range(5)]}
 
 
@@ -69,34 +71,38 @@ class RedcapOutputTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_largest_region_fills_pr2mask_columns_in_model_instance(self):
+    def instances(self, report):
+        by_instance = {}
+        for row in json.loads((report/'output.json').read_text()):
+            self.assertEqual(tuple(row[k] for k in ROUTING[:3]), ('SYNTHETIC', 'test_arm_1', 'pr2mask'))
+            by_instance.setdefault(row['redcap_repeat_instance'], {})[row['field_name']] = row['value']
+        return by_instance
+
+    def dictionary_fields(self, report):
+        with zipfile.ZipFile(report/'output_data_dictionary.zip') as z:
+            self.assertEqual(z.read('OriginID.txt'), b'PR2MASK')
+            return [r['Variable / Field Name'] for r in csv.DictReader(io.StringIO(z.read('instrument.csv').decode()))]
+
+    def test_each_region_fills_its_own_instance(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, work, _, report, _ = fixture(Path(tmp))
-            original = (report/'output_data_dictionary.zip').read_bytes()
-            write_redcap_output(work, source, DEPLOYMENT)
-            rows = json.loads((report/'output.json').read_text())
-            self.assertEqual([r['field_name'] for r in rows], PR2MASK_COLUMNS)
-            self.assertEqual({tuple(r[k] for k in ROUTING) for r in rows},
-                             {('SYNTHETIC', 'test_arm_1', 'pr2mask', '10')})
-            values = {r['field_name']: r['value'] for r in rows}
-            # Regions 2 and 3 tie on size: the lower region number fills the columns.
-            self.assertEqual([values[name] for name in PR2MASK_COLUMNS], ['m2', '50', '50.2'])
-            # pr2mask's dictionary already lists its columns and is left as written.
-            self.assertEqual((report/'output_data_dictionary.zip').read_bytes(), original)
+            write_redcap_output(work, source, DEPLOYMENT, model_version=VERSION)
+            by_instance = self.instances(report)
+            self.assertEqual(sorted(by_instance), ['101', '102', '103'])
+            for k, size in [(1, '20'), (2, '50'), (3, '50')]:
+                self.assertEqual(list(by_instance[str(100 + k)]), FIELDS)
+                self.assertEqual(by_instance[str(100 + k)], dict(
+                    mask_base64_gzip_compressed=f'm{k}', number_of_pixel=size,
+                    physical_size=f'{size}.{k}', model_version=VERSION))
+            self.assertEqual(self.dictionary_fields(report), FIELDS)
 
-    def test_empty_mask_sends_blank_columns(self):
+    def test_empty_mask_fills_first_instance_with_blank_columns(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, work, _, report, _ = fixture(Path(tmp), empty=True)
-            write_redcap_output(work, source, DEPLOYMENT)
-            rows = json.loads((report/'output.json').read_text())
-            self.assertEqual([r['field_name'] for r in rows], PR2MASK_COLUMNS)
-            self.assertEqual({tuple(r[k] for k in ROUTING) for r in rows},
-                             {('SYNTHETIC', 'test_arm_1', 'pr2mask', '10')})
-            self.assertEqual({r['value'] for r in rows}, {''})
-            with zipfile.ZipFile(report/'output_data_dictionary.zip') as z:
-                self.assertEqual(z.read('OriginID.txt'), b'PR2MASK')
-                fields = [r['Variable / Field Name'] for r in csv.DictReader(io.StringIO(z.read('instrument.csv').decode()))]
-            self.assertEqual(fields, PR2MASK_COLUMNS)
+            write_redcap_output(work, source, DEPLOYMENT, model_version=VERSION)
+            self.assertEqual(self.instances(report),
+                             {'101': dict.fromkeys(PR2MASK_COLUMNS, '') | {'model_version': VERSION}})
+            self.assertEqual(self.dictionary_fields(report), FIELDS)
 
     def test_mixed_destinations_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,35 +110,47 @@ class RedcapOutputTests(unittest.TestCase):
             rows[-1]['record_id'] = 'OTHER'
             (report/'output.json').write_text(json.dumps(rows))
             with self.assertRaisesRegex(ValueError, 'Mixed REDCap destinations'):
-                write_redcap_output(work, source, DEPLOYMENT)
+                write_redcap_output(work, source, DEPLOYMENT, model_version=VERSION)
 
-    def test_models_have_distinct_destinations_and_reruns_replace_complete_result(self):
+    def test_region_beyond_the_block_and_missing_version_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, work, _, report, rows = fixture(Path(tmp))
+            with self.assertRaisesRegex(ValueError, 'model_version'):
+                write_redcap_output(work, source, DEPLOYMENT, model_version='')
+            rows[-1]['redcap_repeat_instance'] = '100'
+            (report/'output.json').write_text(json.dumps(rows))
+            with self.assertRaisesRegex(ValueError, 'outside'):
+                write_redcap_output(work, source, DEPLOYMENT, model_version=VERSION)
+
+    def test_models_have_separate_blocks_and_reruns_overwrite_their_instances(self):
         stored = {}
         dynunet = dict(DEPLOYMENT, model_type='dynunet', bundle_sha256='c5642793b0f57b49ea8f04a08d2b8c9deff1523813d87d89eec204f85846d6ec')
         for deployment, empty in [(DEPLOYMENT, False), (dynunet, False), (DEPLOYMENT, True)]:
             with tempfile.TemporaryDirectory() as tmp:
                 source, work, _, report, _ = fixture(Path(tmp), empty=empty)
-                write_redcap_output(work, source, deployment)
+                write_redcap_output(work, source, deployment, model_version=deployment['model_type'])
                 for row in json.loads((report/'output.json').read_text()):
                     stored[tuple(row[k] for k in ROUTING) + (row['field_name'],)] = row['value']
         by_instance = {}
         for key, value in stored.items():
             by_instance.setdefault(key[3], {})[key[4]] = value
-        self.assertEqual(set(by_instance), {'10', '11'})
-        self.assertEqual(by_instance['10'], dict.fromkeys(PR2MASK_COLUMNS, ''))
-        self.assertEqual(by_instance['11']['physical_size'], '50.2')
+        self.assertEqual(sorted(by_instance), ['101', '102', '103', '201', '202', '203'])
+        self.assertEqual(by_instance['101'], dict.fromkeys(PR2MASK_COLUMNS, '') | {'model_version': 'nnunet_large'})
+        # A rerun with fewer regions leaves the earlier run's higher instances.
+        self.assertEqual(by_instance['102']['physical_size'], '50.2')
+        self.assertEqual(by_instance['202']['model_version'], 'dynunet')
 
-    def test_unknown_and_colliding_registry_entries_are_rejected(self):
+    def test_registry_gives_each_bundle_a_block_of_100(self):
+        self.assertEqual(model_instance_base(DEPLOYMENT['bundle_sha256']), 100)
         with self.assertRaisesRegex(ValueError, 'Unregistered'):
-            model_repeat_instance('f'*64)
+            model_instance_base('f'*64)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'registry.json'
-            for registry in ({'a'*64: 10, 'b'*64: 10}, {'a'*64: 9}):
+            for registry in ({'a'*64: 100, 'b'*64: 100}, {'a'*64: 10}, {'a'*64: 150}, {'a'*64: 0}):
                 with self.subTest(registry=registry):
                     path.write_text(json.dumps(registry))
                     with patch.object(redcap_output, 'MODEL_INSTANCES_PATH', path):
                         with self.assertRaisesRegex(ValueError, 'Invalid'):
-                            model_repeat_instance('a'*64)
-
+                            model_instance_base('a'*64)
 
 if __name__ == '__main__': unittest.main()
