@@ -65,7 +65,7 @@ if [ "${mode}" = --save ]; then
     mkdir -p "${release_dir}"
     archive_name="${IMAGE_NAME}-${VERSION}.tar.gz"
     docker save "${DATED_TAG}" "${IMAGE_NAME}:latest" | gzip -1 > "${release_dir}/${archive_name}"
-    (cd "${release_dir}"; sha256sum "${archive_name}" > "${archive_name}.sha256"; sha256sum -c "${archive_name}.sha256"; gzip -t "${archive_name}")
+    gzip -t "${release_dir}/${archive_name}"
     "${PYTHON_BIN}" release.py "${release_dir}" "${DATED_TAG}" "${BASE_REF}"
     echo "Image and release archive verified: ${release_dir}"
     echo 'Use smoke-test.sh to qualify complete inference before PACS deployment.'

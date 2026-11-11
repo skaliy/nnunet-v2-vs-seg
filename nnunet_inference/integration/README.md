@@ -187,11 +187,10 @@ default. Add `--folds 0,1` for a smaller diagnostic regression or `--tta false`
 to run only the non-TTA condition. Completed production qualification should
 record the full five-fold results.
 
-Exports go to `release_packages/<VERSION>/` with the Docker archive, checksum,
-README and `release.json` containing image/base/model/source fingerprints.
-Record completed checks, resource peak and exact limitations in
-`qualification.json`. A built image is not automatically inference-qualified.
-Verify the archive checksum and load the dated tag before handoff. Use a
+`--save` writes `release_packages/<VERSION>/` with the Docker archive, a short README
+(`release.py`: load, image ID, run, REDCap) and `ror_select_entry.txt`. Don't add a
+`.sha256`; the image ID after `docker load` is the check. Add what changed and what was
+tested to the README by hand. A built image is not automatically inference-qualified. Use a
 site-controlled selector for a single CE-T1 input series:
 
 ```json

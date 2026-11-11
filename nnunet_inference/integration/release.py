@@ -1,17 +1,8 @@
-"""Write reproducible handoff metadata; qualification is recorded separately."""
+"""Write the handoff README and ror select entry next to a release archive."""
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import subprocess
-
-
-def sha256(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def inspect(image):
@@ -31,64 +22,39 @@ def ror_select_entry(image_tag):
 '''
 
 
-def handoff_readme(image_tag, repeat_instance, manifest):
-    version = image_tag.rsplit(":", 1)[-1]
+def handoff_readme(image_tag, image_id, base_ref, commit, instance_base, manifest):
+    name, version = image_tag.rsplit(":", 1)
     latest = latest_tag(image_tag)
-    return f'''# nnU-Net PACS handoff — {version}
+    folds = len(manifest["members"])
+    return f'''# {name} {version}
 
-CPU-only {manifest["model_name"]}, using each fold's {manifest["checkpoint"]}.
-Image: `{image_tag}`, also tagged `{latest}`, which the PACS entry uses.
+{manifest["model_name"]}, each fold's `{manifest["checkpoint"]}`. CPU only, TTA on.
+
+## Load
+
+```bash
+docker load -i {name}-{version}.tar.gz
+docker image inspect {latest} --format '{{{{.Id}}}}'
+```
+
+The image ID should be `{image_id}`.
+
+The archive tags the image `{image_tag}` and `{latest}`.
+The PACS entry uses `latest` (`ror_select_entry.txt`), so no config change is needed.
 
 ## Run
 
-Defaults: **TTA on** (original plus one copy flipped inferior-superior and
-anterior-posterior together), five parallel
-folds, **three CPU threads per fold**. No options are needed.
-Qualified with 16 CPUs and 64 GiB memory.
-
-```bash
-# TTA on (default)
-ror trigger -cont {latest} -each
-# TTA off
-ror trigger -cont {latest} -each -envs '{{"tta":false}}'
-```
-
-`-envs` sets `ROR_CONT_OPTIONS`, a JSON object: `tta` must be a bare `true` or
-`false` without quotes, and `model-type` is optional (`{manifest["model_type"]}`).
-Anything else, including `""`, is rejected before inference.
-
-As a ror workflow, add this entry to the select statements. It is also in
-`ror_select_entry.txt` for copying. Replace `ENTRY_NAME` with the workflow `name`
-in the PACS `config.json` and fill in the series selector:
-
-```json
-{ror_select_entry(latest)}```
-
-The entry uses `latest`, so a new release needs no config change: loading its archive moves
-`latest` to the new image.
-
-`"{{}}"` runs the defaults. Use `"{{\\"tta\\":false}}"` to turn TTA off. Don't write `"\\"\\""`
-here: that passes two quote characters and is rejected.
-
-Without ror, mount the input and output folders and pass the options with
-`-e ROR_CONT_OPTIONS='{{"tta":false}}'` if needed:
-
-```bash
-docker run --rm \\
-  -v /absolute/path/dicom-series:/data/input:ro \\
-  -v /absolute/path/empty-output:/output \\
-  {latest}
-```
-
-Use a fresh output folder. Outputs: `labels` (the mask), `fused`, `fused_vote_map`,
-`reports` and `redcap`; reports may be empty for an empty mask.
+`"ROR_CONT_OPTIONS": "{{}}"` runs the defaults (TTA on); `"{{\\"tta\\":false}}"` turns TTA off.
+Needs at least 15 CPU threads and 64 GiB memory.
 
 ## REDCap
 
-Export holds pr2mask's columns for the largest region (no `vs_*` fields),
-using **repeat instance {repeat_instance}** of the `pr2mask` instrument. Install the
-emitted `output_data_dictionary.zip`; the importer must update the supplied repeat
-instance. The full mask is the published `labels` series.
+Each predicted region goes to its own repeat instance of the `pr2mask` instrument
+({instance_base + 1}, {instance_base + 2}, ...). An empty mask gives instance
+{instance_base + 1} with blank measurements. `model_version` is filled in every instance, here
+`{manifest["model_type"]} {folds}-fold, {image_tag}`.
+
+Built from nnunet-v2-vs-seg commit {commit[:7]} (Fiona base {base_ref.rsplit(":", 1)[-1][:8]}).
 '''
 
 
@@ -100,29 +66,13 @@ def main():
     args = parser.parse_args()
     integration = Path(__file__).resolve().parent
     project = integration.parent.parent
-    release = args.release_dir
-    image, base = inspect(args.image_tag), inspect(args.base_image)
     manifest = json.loads((integration / "model/deployment_manifest.json").read_text())
     registry = json.loads((integration / "_pkg/nnunet_inference/redcap_model_instances.json").read_text())
-    fingerprints = {}
-    for root in (integration / "_pkg",):
-        for path in sorted(root.rglob("*")):
-            if path.is_file() and "__pycache__" not in str(path):
-                fingerprints[str(path.relative_to(integration))] = sha256(path)
-    for name in ("entrypoint.sh", "requirements.yml", ".ror/virt/Dockerfile"):
-        fingerprints[name] = sha256(integration / name)
-    state = dict(image_tag=args.image_tag, image_id=image["Id"],
-                 base_id=base["Id"], base_repo_digests=base.get("RepoDigests", []),
-                 source_commit=subprocess.check_output(["git", "-C", str(project), "rev-parse", "HEAD"], text=True).strip(),
-                 source_has_changes=bool(subprocess.check_output(["git", "-C", str(project), "status", "--porcelain"], text=True).strip()),
-                 packaged_files_sha256=fingerprints, model=manifest,
-                 redcap_repeat_instance=registry[manifest["bundle_sha256"]],
-                 tta_default=True, cpu_threads=16, memory_limit_gib=64,
-                 qualification="Image integrity checked; see qualification.json for completed inference checks.")
-    (release / "release.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
-    (release / "README.md").write_text(handoff_readme(
-        args.image_tag, state["redcap_repeat_instance"], manifest))
-    (release / "ror_select_entry.txt").write_text(ror_select_entry(latest_tag(args.image_tag)))
+    commit = subprocess.check_output(["git", "-C", str(project), "rev-parse", "HEAD"], text=True).strip()
+    (args.release_dir / "README.md").write_text(handoff_readme(
+        args.image_tag, inspect(args.image_tag)["Id"], args.base_image, commit,
+        registry[manifest["bundle_sha256"]], manifest))
+    (args.release_dir / "ror_select_entry.txt").write_text(ror_select_entry(latest_tag(args.image_tag)))
 
 
 if __name__ == "__main__":
