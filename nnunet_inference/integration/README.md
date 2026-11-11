@@ -193,12 +193,16 @@ site-controlled selector for a single CE-T1 input series:
   "MMIVVestSchNNUNetMedium": {
     "select": "<PACS-ADMIN-APPROVED VS CE-T1 SERIES SELECTOR>",
     "ROR_CONT_OPTIONS": "{\"model-type\":\"nnunet_medium\",\"tta\":true}",
-    "docker_image": "nnunet-vsseg-5fold:<QUALIFIED_VERSION>"
+    "docker_image": "nnunet-vsseg-5fold:latest"
   },
   "MMIVVestSchNNUNetLarge": {
     "select": "<PACS-ADMIN-APPROVED VS CE-T1 SERIES SELECTOR>",
     "ROR_CONT_OPTIONS": "{\"model-type\":\"nnunet_large\",\"tta\":true}",
-    "docker_image": "nnunet-vsseg:<QUALIFIED_VERSION>"
+    "docker_image": "nnunet-vsseg:latest"
   }
 }
 ```
+
+The entries use `latest`, so a new release needs no config change. The release archive
+carries both tags, and loading it moves `latest` to the new image. The dated tag shows
+which release `latest` is.

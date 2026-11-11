@@ -18,6 +18,10 @@ def inspect(image):
     return json.loads(subprocess.check_output(["docker", "image", "inspect", image]))[0]
 
 
+def latest_tag(image_tag):
+    return image_tag.rsplit(":", 1)[0] + ":latest"
+
+
 def ror_select_entry(image_tag):
     return f'''"ENTRY_NAME": {{
   "select": "<VS CE-T1 series selector>",
@@ -29,10 +33,11 @@ def ror_select_entry(image_tag):
 
 def handoff_readme(image_tag, repeat_instance, manifest):
     version = image_tag.rsplit(":", 1)[-1]
+    latest = latest_tag(image_tag)
     return f'''# nnU-Net PACS handoff — {version}
 
 CPU-only {manifest["model_name"]}, using each fold's {manifest["checkpoint"]}.
-Image: `{image_tag}` (`latest` is also included).
+Image: `{image_tag}`, also tagged `{latest}`, which the PACS entry uses.
 
 ## Run
 
@@ -43,9 +48,9 @@ Qualified with 16 CPUs and 64 GiB memory.
 
 ```bash
 # TTA on (default)
-ror trigger -cont {image_tag} -each
+ror trigger -cont {latest} -each
 # TTA off
-ror trigger -cont {image_tag} -each -envs '{{"tta":false}}'
+ror trigger -cont {latest} -each -envs '{{"tta":false}}'
 ```
 
 `-envs` sets `ROR_CONT_OPTIONS`, a JSON object: `tta` must be a bare `true` or
@@ -57,7 +62,10 @@ As a ror workflow, add this entry to the select statements. It is also in
 in the PACS `config.json` and fill in the series selector:
 
 ```json
-{ror_select_entry(image_tag)}```
+{ror_select_entry(latest)}```
+
+The entry uses `latest`, so a new release needs no config change: loading its archive moves
+`latest` to the new image.
 
 `"{{}}"` runs the defaults. Use `"{{\\"tta\\":false}}"` to turn TTA off. Don't write `"\\"\\""`
 here: that passes two quote characters and is rejected.
@@ -69,7 +77,7 @@ Without ror, mount the input and output folders and pass the options with
 docker run --rm \\
   -v /absolute/path/dicom-series:/data/input:ro \\
   -v /absolute/path/empty-output:/output \\
-  {image_tag}
+  {latest}
 ```
 
 Use a fresh output folder. Outputs: `labels` (the mask), `fused`, `fused_vote_map`,
@@ -114,7 +122,7 @@ def main():
     (release / "release.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
     (release / "README.md").write_text(handoff_readme(
         args.image_tag, state["redcap_repeat_instance"], manifest))
-    (release / "ror_select_entry.txt").write_text(ror_select_entry(args.image_tag))
+    (release / "ror_select_entry.txt").write_text(ror_select_entry(latest_tag(args.image_tag)))
 
 
 if __name__ == "__main__":
