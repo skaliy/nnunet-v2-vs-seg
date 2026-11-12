@@ -26,7 +26,7 @@ RUN conda env create -f /app/requirements.yml && \
 # Required immutable release identity. Declared after the dependency layer so a
 # new release version does not rebuild the environment.
 ARG VERSION
-ARG IMAGE_NAME=nnunet-vsseg-5fold
+ARG IMAGE_NAME=nnunet-vsseg
 RUN test -n "${VERSION}" || \
     (echo "VERSION build argument is required" >&2; exit 1)
 LABEL org.opencontainers.image.version="${VERSION}"
@@ -46,6 +46,6 @@ RUN chmod 0755 /app/entrypoint.sh && \
     test -x /pr2mask/imageAndMask2Report && \
     test -x /pr2mask/imageAndMask2Fused && \
     python -m nnunet_inference.deployment --output /app/model --verify-only --verify-runtime && \
-    python -c "from nnunet_inference.deployment import validate_deployment; from nnunet_inference.redcap_output import model_repeat_instance; model_repeat_instance(validate_deployment('/app/model')['bundle_sha256'])"
+    python -c "from nnunet_inference.deployment import validate_deployment; from nnunet_inference.redcap_output import model_instance_base; model_instance_base(validate_deployment('/app/model')['bundle_sha256'])"
 
 ENTRYPOINT ["/app/entrypoint.sh"]

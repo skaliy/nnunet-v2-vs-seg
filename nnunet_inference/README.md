@@ -37,9 +37,9 @@ settings.
 - `dicom_io.py`: orientation, resampling, DICOM writing, and UID provenance
 - `tests/`: unit tests and optional real-DICOM validation
 - `parallel.py`: CPU fold workers and native ordered logit averaging
-- `deployment.py`: inference-only medium bundle staging and integrity checks
+- `deployment.py`: inference-only ResEnc-L bundle staging and integrity checks
 - `pacs.py`: PACS/pr2mask orchestration and protected output publication
-- `redcap_output.py`: pr2mask's REDCap columns and permanent model destinations
+- `redcap_output.py`: pr2mask's REDCap rows, one instance per region in the model's block
 - `integration/`: Research PACS build, release export and qualification
 
 ## Verify
@@ -53,4 +53,4 @@ NNUNET_MODEL_DIR=/path/to/trained-model \
 ```
 
 Medical images and models are intentionally excluded from Git. See
-[`integration/README.md`](integration/README.md) for the curated ResEnc-M and ResEnc-L five-fold PACS containers, CPU limits, REDCap export and release qualification.
+[`integration/README.md`](integration/README.md) for the curated ResEnc-L five-fold PACS container, CPU limits, REDCap export and release qualification.

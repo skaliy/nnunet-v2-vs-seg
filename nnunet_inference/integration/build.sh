@@ -1,20 +1,14 @@
 #!/bin/bash
-# Stage, build, verify and export the curated medium or large nnU-Net PACS image.
+# Stage, build, verify and export the curated ResEnc-L nnU-Net PACS image.
 set -euo pipefail
 cd "$(dirname "$0")"
 readonly INTEGRATION_DIR="$(pwd)"
 readonly PACKAGE_SRC="$(cd .. && pwd)"
 readonly PROJECT_ROOT="$(cd ../.. && pwd)"
-readonly NNUNET_MODEL="${NNUNET_MODEL:-large}"
-case "${NNUNET_MODEL}" in
-    medium) plans=nnUNetResEncUNetMPlans; default_image=nnunet-vsseg-5fold ;;
-    large) plans=nnUNetResEncUNetLPlans; default_image=nnunet-vsseg ;;
-    *) echo 'Error: NNUNET_MODEL must be medium or large' >&2; exit 2 ;;
-esac
-readonly MODEL_SRC="${NNUNET_MODEL_SRC:-${PROJECT_ROOT}/nnUNet_data/nnUNet_results/Dataset003_VSSegmentationCurated/nnUNetTrainer__${plans}__3d_fullres}"
+readonly MODEL_SRC="${NNUNET_MODEL_SRC:-${PROJECT_ROOT}/nnUNet_data/nnUNet_results/Dataset003_VSSegmentationCurated/nnUNetTrainer__nnUNetResEncUNetLPlans__3d_fullres}"
 readonly CHECKPOINT="${NNUNET_CHECKPOINT:-final}"
 readonly PYTHON_BIN="${NNUNET_PYTHON:-python}"
-readonly IMAGE_NAME="${IMAGE_NAME:-${default_image}}"
+readonly IMAGE_NAME="${IMAGE_NAME:-nnunet-vsseg}"
 readonly VERSION="${VERSION:-$(date -u +%Y%m%dT%H%M%SZ)}"
 readonly DATED_TAG="${IMAGE_NAME}:${VERSION}"
 readonly BASE_IMAGE=haukebartsch/fiona-component-python:latest
@@ -36,7 +30,7 @@ trap 'rm -rf "${stage_dir}"' EXIT
 PYTHONPATH="${PROJECT_ROOT}" "${PYTHON_BIN}" -m nnunet_inference.deployment \
     --source "${MODEL_SRC}" --output "${stage_dir}/model" --checkpoint "${CHECKPOINT}"
 PYTHONPATH="${PROJECT_ROOT}" "${PYTHON_BIN}" -c \
-    'import sys; from nnunet_inference.deployment import validate_deployment; from nnunet_inference.redcap_output import model_repeat_instance; print("REDCap instance:", model_repeat_instance(validate_deployment(sys.argv[1])["bundle_sha256"]))' \
+    'import sys; from nnunet_inference.deployment import validate_deployment; from nnunet_inference.redcap_output import model_instance_base; base = model_instance_base(validate_deployment(sys.argv[1])["bundle_sha256"]); print(f"REDCap instances: {base + 1}-{base + 99}")' \
     "${stage_dir}/model"
 rm -rf model _pkg
 mv "${stage_dir}/model" model
@@ -53,7 +47,7 @@ docker pull "${BASE_IMAGE}"
 BASE_REF="$(docker image inspect "${BASE_IMAGE}" --format '{{index .RepoDigests 0}}')"
 test -n "${BASE_REF}"
 docker build --pull --build-arg "VERSION=${VERSION}" --build-arg "IMAGE_NAME=${IMAGE_NAME}" \
-    --build-arg "FIONA_BASE=${BASE_REF}" --build-arg "MODEL_TYPE=nnunet_${NNUNET_MODEL}" \
+    --build-arg "FIONA_BASE=${BASE_REF}" \
     -f .ror/virt/Dockerfile -t "${DATED_TAG}" -t "${IMAGE_NAME}:latest" .
 docker run --rm --network none --entrypoint /bin/bash "${DATED_TAG}" -lc \
     'set -e
@@ -65,7 +59,7 @@ if [ "${mode}" = --save ]; then
     mkdir -p "${release_dir}"
     archive_name="${IMAGE_NAME}-${VERSION}.tar.gz"
     docker save "${DATED_TAG}" "${IMAGE_NAME}:latest" | gzip -1 > "${release_dir}/${archive_name}"
-    (cd "${release_dir}"; sha256sum "${archive_name}" > "${archive_name}.sha256"; sha256sum -c "${archive_name}.sha256"; gzip -t "${archive_name}")
+    gzip -t "${release_dir}/${archive_name}"
     "${PYTHON_BIN}" release.py "${release_dir}" "${DATED_TAG}" "${BASE_REF}"
     echo "Image and release archive verified: ${release_dir}"
     echo 'Use smoke-test.sh to qualify complete inference before PACS deployment.'

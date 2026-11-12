@@ -1,4 +1,4 @@
-"""Stage and verify a curated ResEnc-M or ResEnc-L inference-only five-fold bundle."""
+"""Stage and verify the curated ResEnc-L inference-only five-fold bundle."""
 import argparse
 import hashlib
 import importlib.metadata
@@ -13,10 +13,8 @@ from . import dicom_io
 from .predictor import FIVE_FOLDS, build_predictor
 
 DATASET = "Dataset003_VSSegmentationCurated"
-# Each image packages one of these models; the plans name selects it.
+# The packaged model; the plans name selects it.
 MODELS = {
-    "nnunet_medium": dict(name="ResEnc-M Dataset003 folds 0,1,2,3,4", plans="nnUNetResEncUNetMPlans",
-                          patch_size=[48, 192, 192], features_per_stage=[32, 64, 128, 256, 320, 320]),
     "nnunet_large": dict(name="ResEnc-L Dataset003 folds 0,1,2,3,4", plans="nnUNetResEncUNetLPlans",
                          patch_size=[64, 320, 256], features_per_stage=[32, 64, 128, 256, 320, 320, 320]),
 }
@@ -44,7 +42,7 @@ def validate_plan(model_dir):
     dataset = json.loads((Path(model_dir) / "dataset.json").read_text())
     model_type = next((t for t, m in MODELS.items() if m["plans"] == plans.get("plans_name")), None)
     if plans.get("dataset_name") != DATASET or model_type is None:
-        raise ValueError("Expected curated Dataset003 ResEnc-M or ResEnc-L plans")
+        raise ValueError("Expected curated Dataset003 ResEnc-L plans")
     spec = MODELS[model_type]
     config = plans["configurations"]["3d_fullres"]
     if (dataset.get("channel_names") != {"0": "T1"}

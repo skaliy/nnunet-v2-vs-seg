@@ -1,4 +1,4 @@
-"""Research PACS inference and pr2mask/REDCap publication for ResEnc-M or ResEnc-L."""
+"""Research PACS inference and pr2mask/REDCap publication for ResEnc-L."""
 import argparse
 from datetime import datetime
 import os
@@ -11,13 +11,13 @@ import tempfile
 from .deployment import MODELS, validate_deployment
 from .dicom_io import tag_pr2mask_mask
 from .pipeline import run_inference
-from .redcap_output import _series, model_repeat_instance, write_redcap_output
+from .redcap_output import _series, model_instance_base, write_redcap_output
 
 FINAL_OUTPUTS = ("labels", "fused", "fused_vote_map", "reports", "redcap")
 LOG_NAME = "pacs_command.log"
 # pr2mask fits about 40 title characters on a fused image, so long model types
 # get a shorter visible label.
-TITLE_LABELS = {"nnunet_medium": "nnunet_m", "nnunet_large": "nnunet_l"}
+TITLE_LABELS = {"nnunet_large": "nnunet_l"}
 
 
 def configure_cpu():
@@ -57,7 +57,14 @@ def validate_input(input_dir):
         raise ValueError("Missing input Study/Series identity")
 
 
-def postprocess(input_dir, work_dir, output_dir, deployment, *, version,
+def model_version(deployment, container):
+    """REDCap model_version, e.g. 'nnunet_large 5-fold, nnunet-vsseg:20261111T090000Z'."""
+    count = len(deployment["members"])
+    members = f"{count}-fold" if count > 1 else "single model"
+    return f"{deployment['model_type']} {members}, {container}"
+
+
+def postprocess(input_dir, work_dir, output_dir, deployment, *, version, container,
                 use_tta, pr2mask_dir):
     # The image version pins the bundle, so version, model and TTA keep pr2mask's
     # stable series UIDs distinct.
@@ -87,7 +94,8 @@ def postprocess(input_dir, work_dir, output_dir, deployment, *, version,
             f"pr2mask must create exactly one mask series in {work_dir / 'labels'}; "
             f"found {len(labels)}")
     tag_pr2mask_mask(labels[0], work_dir / "mask")
-    write_redcap_output(work_dir, input_dir, deployment)
+    write_redcap_output(work_dir, input_dir, deployment,
+                        model_version=model_version(deployment, container))
     missing = [n for n in FINAL_OUTPUTS if not (work_dir / n).is_dir()]
     if missing:
         raise RuntimeError(f"Missing required PACS products: {missing}")
@@ -98,11 +106,11 @@ def postprocess(input_dir, work_dir, output_dir, deployment, *, version,
         path.chmod(path.stat().st_mode | (0o666 if path.is_file() else 0o777))
 
 
-def run_pacs(input_dir, output_dir, *, model_dir="/app/model", version,
+def run_pacs(input_dir, output_dir, *, model_dir="/app/model", version, container,
              use_tta=True, pr2mask_dir="/pr2mask", model_type=None):
     input_dir, output_dir, pr2mask_dir = map(Path, (input_dir, output_dir, pr2mask_dir))
-    if not version:
-        raise RuntimeError("VERSION is required for PACS provenance")
+    if not version or not container:
+        raise RuntimeError("VERSION and CONTAINER_VERSION are required for PACS provenance")
     for name in ("imageAndMask2Report", "imageAndMask2Fused"):
         if not os.access(pr2mask_dir / name, os.X_OK):
             raise RuntimeError(f"Required pr2mask tool is unavailable: {name}")
@@ -111,7 +119,7 @@ def run_pacs(input_dir, output_dir, *, model_dir="/app/model", version,
     deployment = validate_deployment(model_dir, verify_runtime=True)
     if model_type is not None and model_type != deployment["model_type"]:
         raise RuntimeError(f"Requested {model_type}, but this image packages {deployment['model_type']}")
-    model_repeat_instance(deployment["bundle_sha256"])
+    model_instance_base(deployment["bundle_sha256"])
     configure_cpu()
     with tempfile.TemporaryDirectory(prefix="nnunet-pacs-") as directory:
         work_dir = Path(directory)
@@ -120,7 +128,7 @@ def run_pacs(input_dir, output_dir, *, model_dir="/app/model", version,
                       folds=tuple(deployment["folds"]), disable_tta=not use_tta,
                       parallel=True, deployment_version=version)
         postprocess(input_dir, work_dir, output_dir, deployment, version=version,
-                    use_tta=use_tta, pr2mask_dir=pr2mask_dir)
+                    container=container, use_tta=use_tta, pr2mask_dir=pr2mask_dir)
     peak_path = Path("/sys/fs/cgroup/memory.peak")
     peak = int(peak_path.read_text()) if peak_path.exists() else None
     (output_dir / "runtime_resources.json").write_text(json.dumps(dict(
@@ -140,7 +148,8 @@ def main(argv=None):
     parser.add_argument("--tta", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args(argv)
     run_pacs(args.input_dir, args.output_dir, model_dir=args.model_dir,
-             version=os.environ.get("VERSION"), use_tta=args.tta, model_type=args.model_type)
+             version=os.environ.get("VERSION"), container=os.environ.get("CONTAINER_VERSION"),
+             use_tta=args.tta, model_type=args.model_type)
 
 
 if __name__ == "__main__":

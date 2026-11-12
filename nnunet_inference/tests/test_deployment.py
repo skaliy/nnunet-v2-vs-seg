@@ -12,10 +12,10 @@ from nnunet_inference import deployment
 def model_fixture(root):
     source = root / "source"
     source.mkdir()
-    plans = dict(dataset_name=deployment.DATASET, plans_name=deployment.MODELS["nnunet_medium"]["plans"],
-                 configurations={"3d_fullres": dict(patch_size=[48, 192, 192],
+    plans = dict(dataset_name=deployment.DATASET, plans_name=deployment.MODELS["nnunet_large"]["plans"],
+                 configurations={"3d_fullres": dict(patch_size=[64, 320, 256],
                      architecture=dict(network_class_name="dynamic_network_architectures.architectures.unet.ResidualEncoderUNet",
-                                       arch_kwargs=dict(features_per_stage=[32, 64, 128, 256, 320, 320])))})
+                                       arch_kwargs=dict(features_per_stage=[32, 64, 128, 256, 320, 320, 320])))})
     (source / "plans.json").write_text(json.dumps(plans))
     (source / "dataset.json").write_text(json.dumps(dict(channel_names={"0": "T1"},
         labels={"background": 0, "VS": 1}, numTraining=344, file_ending=".nii.gz")))
@@ -58,7 +58,7 @@ class BundleTests(unittest.TestCase):
                 deployment.prepare_bundle(source, root / "model")
             self.assertFalse((root / "model").exists())
             (source / "plans.json").write_text('{}')
-            with self.assertRaisesRegex(ValueError, "ResEnc-M"):
+            with self.assertRaisesRegex(ValueError, "ResEnc-L"):
                 deployment.validate_plan(source)
 
     def test_manifest_configuration_is_bound_to_bundle_digest(self):
