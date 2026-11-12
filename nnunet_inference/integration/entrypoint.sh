@@ -1,5 +1,5 @@
 #!/bin/bash --login
-# /data/input -> nnU-Net ResEnc-M or ResEnc-L -> pr2mask + REDCap -> /output
+# /data/input -> nnU-Net ResEnc-L -> pr2mask + REDCap -> /output
 # ROR exposes the JSON passed with -envs as ROR_CONT_OPTIONS:
 #   ror trigger ... -envs '{"tta":false}'
 set -euo pipefail

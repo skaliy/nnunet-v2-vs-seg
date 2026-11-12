@@ -57,7 +57,7 @@ class PacsTests(unittest.TestCase):
             self.assertFalse((output / "mask").exists())
 
     def test_postprocessing_requires_exactly_one_pr2mask_mask_series(self):
-        deployment = dict(model_type="nnunet_medium", model_name="Medium", bundle_sha256="a" * 64,
+        deployment = dict(model_type="nnunet_large", model_name="Large", bundle_sha256="a" * 64,
                           members=[dict(member_id=f"fold_{n}") for n in range(5)])
         for extra in (None, "1.2.99"):
             with self.subTest(extra=extra), tempfile.TemporaryDirectory() as tmp:
@@ -86,7 +86,7 @@ class PacsTests(unittest.TestCase):
             source, work, *_ = fixture(root)
             output = root / "output"
             output.mkdir()
-            deployment = dict(model_type="nnunet_medium", model_name="Medium", bundle_sha256="a" * 64,
+            deployment = dict(model_type="nnunet_large", model_name="Large", bundle_sha256="a" * 64,
                               members=[dict(member_id=f"fold_{n}") for n in range(5)])
             with patch.object(pacs.subprocess, "run", side_effect=RuntimeError("tool failure")):
                 with self.assertRaisesRegex(RuntimeError, "tool failure"):
@@ -116,10 +116,10 @@ class EntrypointTests(unittest.TestCase):
         entrypoint = Path(__file__).resolve().parents[1] / "integration/entrypoint.sh"
         for options, expected in [("", "--tta"), ("{}", "--tta"), ('{"tta":true}', "--tta"),
                                   ('{"tta":false}', "--no-tta"),
-                                  ('{"model-type":"nnunet_medium","tta":true}', "--tta"),
+                                  ('{"model-type":"nnunet_large","tta":true}', "--tta"),
                                   ('""', None), ('{"tta":""}', None), ('{"--tta":""}', None),
                                   ('{"tta":"false"}', None), ('{"tta":null}', None),
-                                  ('{"model-type":"large"}', None), ('{"model-type":"nnunet_large"}', None),
+                                  ('{"model-type":"large"}', None), ('{"model-type":"nnunet_medium"}', None),
                                   ('{"other":1}', None),
                                   ('{"tta":true};touch /tmp/invalid', None)]:
             with tempfile.TemporaryDirectory() as tmp:
@@ -127,7 +127,7 @@ class EntrypointTests(unittest.TestCase):
                 (root / "python").write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
                 (root / "python").chmod(0o755)
                 (root / "shell-env").write_text('conda() { return 0; }\nexport -f conda\n')
-                (root / "deployment_manifest.json").write_text('{"model_type": "nnunet_medium"}')
+                (root / "deployment_manifest.json").write_text('{"model_type": "nnunet_large"}')
                 env = dict(os.environ, PATH=str(root) + ":" + os.environ["PATH"],
                            BASH_ENV=str(root / "shell-env"), ROR_CONT_OPTIONS=options,
                            NNUNET_MODEL_DIR=str(root))
@@ -140,4 +140,4 @@ class EntrypointTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(result.stdout.splitlines(), ["-m", "nnunet_inference.pacs",
                                      "/data/input", "/output", expected,
-                                     "--model-type", "nnunet_medium"])
+                                     "--model-type", "nnunet_large"])

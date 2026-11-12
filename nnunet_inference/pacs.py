@@ -1,4 +1,4 @@
-"""Research PACS inference and pr2mask/REDCap publication for ResEnc-M or ResEnc-L."""
+"""Research PACS inference and pr2mask/REDCap publication for ResEnc-L."""
 import argparse
 from datetime import datetime
 import os
@@ -17,7 +17,7 @@ FINAL_OUTPUTS = ("labels", "fused", "fused_vote_map", "reports", "redcap")
 LOG_NAME = "pacs_command.log"
 # pr2mask fits about 40 title characters on a fused image, so long model types
 # get a shorter visible label.
-TITLE_LABELS = {"nnunet_medium": "nnunet_m", "nnunet_large": "nnunet_l"}
+TITLE_LABELS = {"nnunet_large": "nnunet_l"}
 
 
 def configure_cpu():

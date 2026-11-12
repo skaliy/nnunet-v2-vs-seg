@@ -1,18 +1,13 @@
-# nnU-Net ResEnc-M / ResEnc-L Research PACS container
+# nnU-Net ResEnc-L Research PACS container
 
-Each image packages one trained **Dataset003_VSSegmentationCurated** model,
-numeric folds 0–4 with `3d_fullres`: large ResEnc-L (`NNUNET_MODEL=large`,
-the default, image `nnunet-vsseg`) or medium ResEnc-M
-(`NNUNET_MODEL=medium`, image `nnunet-vsseg-5fold`). Large is the PACS model:
-under 16 CPUs it is faster than medium and had the fewest false positives. Each fold uses its
-final checkpoint by default, as nnU-Net does and as in the cross-validation
-results. `NNUNET_CHECKPOINT=best` selects fold-best checkpoints. Medium is not deployed and
-has no REDCap instance, so a medium build stops until one is registered. The previous Dataset002 ResEnc-L
-images and release archives are retained for rollback.
+The image `nnunet-vsseg` packages the trained **Dataset003_VSSegmentationCurated** ResEnc-L
+model, numeric folds 0–4 with `3d_fullres`. Each fold uses its final checkpoint by default,
+as nnU-Net does and as in the cross-validation results. `NNUNET_CHECKPOINT=best` selects
+fold-best checkpoints.
 
 The container follows fastMONAI's PACS output and REDCap contract. It keeps
 nnU-Net's own preprocessing, Gaussian sliding windows, trained patch size
-`64 x 320 x 256` (large) or `48 x 192 x 192` (medium) in nnU-Net axis order and
+`64 x 320 x 256` in nnU-Net axis order and
 ordered fold **logit** averaging. TTA averages the original and one copy flipped
 inferior-superior and anterior-posterior together (nnU-Net axes 0 and 1). On the
 held-out folds this had as few or fewer false positives than nnU-Net's
@@ -38,7 +33,6 @@ cd nnunet_inference/integration
 ./build.sh --stage-only
 ./build.sh --build
 ./build.sh --save
-NNUNET_MODEL=medium ./build.sh --save
 ```
 
 Each invocation stages and verifies the bundle. Successful builds remove the
@@ -101,8 +95,7 @@ ror trigger -cont nnunet-vsseg:<VERSION> -each -envs '{"tta":false}'
 ```
 
 `ROR_CONT_OPTIONS` supports `model-type` and `tta` (a JSON Boolean).
-`model-type` is optional and must name the packaged model (`nnunet_medium` or
-`nnunet_large`). **TTA is enabled** by default, as in fastMONAI. TTA averages the original and one copy flipped inferior-superior and anterior-posterior together.
+`model-type` is optional and must be `nnunet_large`. **TTA is enabled** by default, as in fastMONAI. TTA averages the original and one copy flipped inferior-superior and anterior-posterior together.
 `{"tta":false}` disables mirror TTA. Unknown keys, other model
 types, string/numeric TTA values and non-objects such as `""` are rejected before
 inference; the error prints the value it received.
@@ -195,11 +188,6 @@ site-controlled selector for a single CE-T1 input series:
 
 ```json
 {
-  "MMIVVestSchNNUNetMedium": {
-    "select": "<PACS-ADMIN-APPROVED VS CE-T1 SERIES SELECTOR>",
-    "ROR_CONT_OPTIONS": "{\"model-type\":\"nnunet_medium\",\"tta\":true}",
-    "docker_image": "nnunet-vsseg-5fold:latest"
-  },
   "MMIVVestSchNNUNetLarge": {
     "select": "<PACS-ADMIN-APPROVED VS CE-T1 SERIES SELECTOR>",
     "ROR_CONT_OPTIONS": "{\"model-type\":\"nnunet_large\",\"tta\":true}",
@@ -208,6 +196,6 @@ site-controlled selector for a single CE-T1 input series:
 }
 ```
 
-The entries use `latest`, so a new release needs no config change. The release archive
+The entry uses `latest`, so a new release needs no config change. The release archive
 carries both tags, and loading it moves `latest` to the new image. The dated tag shows
 which release `latest` is.

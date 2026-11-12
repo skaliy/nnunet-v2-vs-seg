@@ -264,8 +264,8 @@ class TestTagPr2maskMask(unittest.TestCase):
             ours, labels = Path(tmp) / "mask", Path(tmp) / "labels"
             self.write_series(
                 ours, "2.25.1",
-                SoftwareVersions=["Medium", "abcd1234", "nnUNetv2 2.6.2"],
-                SeriesDescription="nnU-Net Medium segmentation mask",
+                SoftwareVersions=["ResEnc-L", "abcd1234", "nnUNetv2 2.6.2"],
+                SeriesDescription="nnU-Net ResEnc-L segmentation mask",
                 DerivationDescription="nnU-Net segmentation mask; model_version=abc",
                 ImageType=["DERIVED", "SECONDARY", "M", "ND", "MASK"])
             self.write_series(
@@ -281,8 +281,8 @@ class TestTagPr2maskMask(unittest.TestCase):
         self.assertEqual(len(written), 2)
         for index, dataset in enumerate(written):
             self.assertEqual(list(dataset.SoftwareVersions),
-                             ["Medium", "abcd1234", "nnUNetv2 2.6.2"])
-            self.assertEqual(dataset.SeriesDescription, "nnU-Net Medium segmentation mask")
+                             ["ResEnc-L", "abcd1234", "nnUNetv2 2.6.2"])
+            self.assertEqual(dataset.SeriesDescription, "nnU-Net ResEnc-L segmentation mask")
             self.assertIn("model_version=abc", dataset.DerivationDescription)
             self.assertEqual(list(dataset.ImageType),
                              ["DERIVED", "SECONDARY", "OTHER", "MASK"])
