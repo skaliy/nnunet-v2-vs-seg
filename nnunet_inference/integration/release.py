@@ -22,7 +22,7 @@ def ror_select_entry(image_tag):
 '''
 
 
-def handoff_readme(image_tag, image_id, base_ref, commit, instance_base, manifest):
+def handoff_readme(image_tag, image_id, base_ref, source, instance_base, manifest):
     name, version = image_tag.rsplit(":", 1)
     latest = latest_tag(image_tag)
     folds = len(manifest["members"])
@@ -54,7 +54,7 @@ Each predicted region goes to its own repeat instance of the `pr2mask` instrumen
 {instance_base + 1} with blank measurements. `model_version` is filled in every instance, here
 `{manifest["model_type"]} {folds}-fold, {image_tag}`.
 
-Built from nnunet-v2-vs-seg commit {commit[:7]} (Fiona base {base_ref.rsplit(":", 1)[-1][:8]}).
+Built from nnunet-v2-vs-seg commit {source} (Fiona base {base_ref.rsplit(":", 1)[-1][:8]}).
 '''
 
 
@@ -68,9 +68,12 @@ def main():
     project = integration.parent.parent
     manifest = json.loads((integration / "model/deployment_manifest.json").read_text())
     registry = json.loads((integration / "_pkg/nnunet_inference/redcap_model_instances.json").read_text())
-    commit = subprocess.check_output(["git", "-C", str(project), "rev-parse", "HEAD"], text=True).strip()
+    git = ["git", "-C", str(project)]
+    source = subprocess.check_output([*git, "rev-parse", "--short=7", "HEAD"], text=True).strip()
+    if subprocess.check_output([*git, "status", "--porcelain", "--untracked-files=no"], text=True).strip():
+        source += " with uncommitted changes"
     (args.release_dir / "README.md").write_text(handoff_readme(
-        args.image_tag, inspect(args.image_tag)["Id"], args.base_image, commit,
+        args.image_tag, inspect(args.image_tag)["Id"], args.base_image, source,
         registry[manifest["bundle_sha256"]], manifest))
     (args.release_dir / "ror_select_entry.txt").write_text(ror_select_entry(latest_tag(args.image_tag)))
 
