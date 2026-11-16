@@ -29,6 +29,7 @@ python -m unittest discover -s nnunet_inference/tests -p 'test_*.py' -v
 bash -n nnunet_inference/integration/build.sh
 bash -n nnunet_inference/integration/entrypoint.sh
 bash -n nnunet_inference/integration/smoke-test.sh
+bash -n nnunet_inference/integration/release-regression.sh
 cd nnunet_inference/integration
 ./build.sh --stage-only
 ./build.sh --build
@@ -197,7 +198,9 @@ release runs did not write. Build the candidate with the release's `VERSION` und
 another `IMAGE_NAME`, on the release's Fiona base
 (`FIONA_BASE=haukebartsch/fiona-component-python@sha256:<digest>`); the script gives it
 the release's `CONTAINER_VERSION` for the run, so the image name is not a difference.
-The date is drawn into the fused images, so use a new work directory each day.
+Finished runs in the work directory are reused for the same image ID, so a rebuilt
+candidate is run again. The date is drawn into the fused images, so use a new work
+directory each day.
 
 `--save` writes `release_packages/<VERSION>/` with the Docker archive, a short README
 (`release.py`: load, image ID, run, REDCap) and `ror_select_entry.txt`. Don't add a
