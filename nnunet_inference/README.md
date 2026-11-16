@@ -48,6 +48,7 @@ settings.
 
 ```bash
 python -m unittest discover -s nnunet_inference/tests -p 'test_*.py' -v
+python -m unittest discover -s tests -p 'test_*.py' -v
 
 NNUNET_DICOM_FIXTURE=/path/to/dicom \
 NNUNET_MODEL_DIR=/path/to/trained-model \
