@@ -74,7 +74,7 @@ class PrepareDatasetTests(unittest.TestCase):
         self.assertEqual(int(sitk.GetArrayFromImage(label).sum()), 8)   # stray voxel removed
         self.assertEqual(label.GetSpacing(), (0.5, 0.5, 1.5))
 
-    def test_mask_on_another_grid_is_rejected_before_anything_is_written(self):
+    def test_mask_on_another_grid_is_rejected_when_the_index_is_loaded(self):
         mask = np.zeros(SHAPE, dtype=np.uint8)
         for case, changes, expected in (
                 ("case0", dict(spacing=(0.5, 0.5, 1.0)),
