@@ -6,9 +6,11 @@
     compare_outputs.py check BASELINE.json CANDIDATE.json
 
 A snapshot is a flat {key: value} map of everything one run wrote. ``stable``
-keeps the entries on which two runs of the same image agree, which drops
-timestamps and memory figures. ``check`` requires a candidate run to match
-every entry of that baseline.
+compares two reference runs of the same image. It writes the entries on which
+they agree as stable, and lists as unstable the keys whose values differ or
+that only one run had, such as timestamps and memory figures. ``check``
+requires a candidate run to match every stable entry and to have no entry that
+the reference runs did not have. Unstable entries may have any value.
 """
 import argparse
 import hashlib
@@ -115,9 +117,14 @@ def stable(first, second):
     return kept, dropped
 
 
-def check(baseline, candidate):
-    """Keys of the baseline that the candidate lacks or has with another value."""
-    return sorted(key for key, value in baseline.items() if candidate.get(key) != value)
+def check(baseline, candidate, unstable=()):
+    """Keys that differ: those of the baseline that the candidate lacks or has
+    with another value, and those of the candidate that are neither in the
+    baseline nor unstable."""
+    unstable = set(unstable)
+    changed = {key for key, value in baseline.items() if candidate.get(key) != value}
+    added = {key for key in candidate if key not in baseline and key not in unstable}
+    return sorted(changed | added)
 
 
 def _load(path):
@@ -142,16 +149,22 @@ def main(argv=None):
         return 0
     if args.command == "stable":
         kept, dropped = stable(_load(args.first), _load(args.second))
-        args.baseline.write_text(json.dumps(kept, indent=1, sort_keys=True) + "\n")
+        args.baseline.write_text(json.dumps(dict(stable=kept, unstable=dropped),
+                                            indent=1, sort_keys=True) + "\n")
+        unstable = _counts(dropped)
         print(f"stable: {_counts(kept)}")
-        print(f"not stable between the two runs: {_counts(dropped)}")
-        if any(_group(key) == "labels pixels" for key in dropped):
+        print(f"not stable between the two runs: {unstable}")
+        for group, count in unstable.items():
+            if group.endswith(" pixels") and group != "labels pixels":
+                print(f"Warning: the two runs disagree on {count} entries of '{group}'; "
+                      "they are not compared", file=sys.stderr)
+        if "labels pixels" in unstable:
             print("Error: the two runs disagree on the mask pixels", file=sys.stderr)
             return 1
         return 0
     baseline = _load(args.baseline)
-    different = check(baseline, _load(args.candidate))
-    print(f"compared: {_counts(baseline)}")
+    different = check(baseline["stable"], _load(args.candidate), baseline["unstable"])
+    print(f"compared: {_counts(baseline['stable'])}")
     if different:
         print(f"Error: {len(different)} entries differ: {_counts(different)}", file=sys.stderr)
         for key in different[:20]:

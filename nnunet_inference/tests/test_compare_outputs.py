@@ -1,5 +1,7 @@
 """The run comparison must ignore what differs between two runs of one image
-and report a changed pixel, tag or REDCap value in a candidate."""
+and report a changed, missing or added pixel, tag or REDCap value in a candidate."""
+import contextlib
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -41,6 +43,14 @@ def write_run(root, *, prefix, content_time, memory_peak, pixel=1, model_version
     return root
 
 
+def run_command(argv):
+    """Exit status, standard output and standard error of the command line."""
+    output, errors = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+        status = compare_outputs.main(argv)
+    return status, output.getvalue(), errors.getvalue()
+
+
 class CompareOutputsTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -73,11 +83,20 @@ class CompareOutputsTests(unittest.TestCase):
         self.assertRegex(value, r"^sha256:[0-9a-f]{64}$")
 
     def test_an_unchanged_candidate_matches(self):
-        self.assertEqual(compare_outputs.check(self.baseline, self.candidate()), [])
+        self.assertEqual(compare_outputs.check(self.baseline, self.candidate(), self.dropped), [])
+
+    def test_entries_that_vary_are_additions_unless_they_are_unstable(self):
+        self.assertEqual(compare_outputs.check(self.baseline, self.candidate()), self.dropped)
+
+    def test_an_added_entry_is_reported(self):
+        candidate = self.candidate()
+        candidate["redcap/0#SYNTHETIC/test_arm_1/pr2mask/101/new_field"] = '"1"'
+        self.assertEqual(compare_outputs.check(self.baseline, candidate, self.dropped),
+                         ["redcap/0#SYNTHETIC/test_arm_1/pr2mask/101/new_field"])
 
     def test_a_changed_pixel_and_redcap_value_are_reported(self):
         different = compare_outputs.check(
-            self.baseline, self.candidate(pixel=2, model_version="model, other:1"))
+            self.baseline, self.candidate(pixel=2, model_version="model, other:1"), self.dropped)
         self.assertEqual(different, [
             "labels/0000#pixels", "labels/0001#pixels", "labels/0002#pixels",
             "redcap/0#SYNTHETIC/test_arm_1/pr2mask/101/model_version"])
@@ -85,25 +104,51 @@ class CompareOutputsTests(unittest.TestCase):
     def test_a_missing_output_is_reported(self):
         candidate = self.candidate()
         del candidate["labels/0002#pixels"]
-        self.assertEqual(compare_outputs.check(self.baseline, candidate), ["labels/0002#pixels"])
+        self.assertEqual(compare_outputs.check(self.baseline, candidate, self.dropped),
+                         ["labels/0002#pixels"])
 
     def test_command_line_writes_files_and_fails_on_a_difference(self):
         paths = {name: self.root / f"{name}.json" for name in ("first", "second", "baseline", "candidate")}
         for name in ("first", "second"):
-            self.assertEqual(compare_outputs.main(["snapshot", str(self.root / name), str(paths[name])]), 0)
-        self.assertEqual(compare_outputs.main(
-            ["stable", str(paths["first"]), str(paths["second"]), str(paths["baseline"])]), 0)
+            self.assertEqual(run_command(["snapshot", str(self.root / name), str(paths[name])])[0], 0)
+        self.assertEqual(run_command(
+            ["stable", str(paths["first"]), str(paths["second"]), str(paths["baseline"])])[0], 0)
+        baseline = json.loads(paths["baseline"].read_text())
+        self.assertEqual(sorted(baseline), ["stable", "unstable"])
+        self.assertEqual(baseline["stable"], self.baseline)
+        self.assertEqual(baseline["unstable"], self.dropped)
         paths["candidate"].write_text(json.dumps(self.candidate(pixel=2)))
-        self.assertEqual(compare_outputs.main(["check", str(paths["baseline"]), str(paths["candidate"])]), 1)
+        status, _, errors = run_command(["check", str(paths["baseline"]), str(paths["candidate"])])
+        self.assertEqual(status, 1)
+        self.assertIn("Error: 3 entries differ", errors)
+        self.assertIn("labels/0000#pixels", errors)
         paths["candidate"].write_text(json.dumps(compare_outputs.snapshot(self.root / "first")))
-        self.assertEqual(compare_outputs.main(["check", str(paths["baseline"]), str(paths["candidate"])]), 0)
+        status, output, _ = run_command(["check", str(paths["baseline"]), str(paths["candidate"])])
+        self.assertEqual(status, 0)
+        self.assertIn("candidate matches the baseline", output)
 
     def test_two_runs_that_disagree_on_the_mask_are_an_error(self):
         paths = {name: self.root / f"{name}.json" for name in ("first", "other", "baseline")}
         paths["first"].write_text(json.dumps(compare_outputs.snapshot(self.root / "first")))
         paths["other"].write_text(json.dumps(self.candidate(pixel=2)))
-        self.assertEqual(compare_outputs.main(
-            ["stable", str(paths["first"]), str(paths["other"]), str(paths["baseline"])]), 1)
+        status, _, errors = run_command(
+            ["stable", str(paths["first"]), str(paths["other"]), str(paths["baseline"])])
+        self.assertEqual(status, 1)
+        self.assertIn("Error: the two runs disagree on the mask pixels", errors)
+
+    def test_two_runs_that_disagree_on_other_pixels_give_a_warning(self):
+        first = compare_outputs.snapshot(self.root / "first")
+        first |= {f"fused/000{index}#pixels": "sha256:" + "0" * 64 for index in range(2)}
+        second = first | {f"fused/000{index}#pixels": "sha256:" + "1" * 64 for index in range(2)}
+        paths = {name: self.root / f"{name}.json" for name in ("first", "second", "baseline")}
+        paths["first"].write_text(json.dumps(first))
+        paths["second"].write_text(json.dumps(second))
+        status, _, errors = run_command(
+            ["stable", str(paths["first"]), str(paths["second"]), str(paths["baseline"])])
+        self.assertEqual(status, 0)
+        self.assertEqual(errors, "Warning: the two runs disagree on 2 entries of 'fused pixels'; "
+                                 "they are not compared\n")
+        self.assertIn("fused/0000#pixels", json.loads(paths["baseline"].read_text())["unstable"])
 
 
 if __name__ == "__main__":
