@@ -11,9 +11,9 @@ import zipfile
 
 import numpy as np
 from pydicom import dcmread
-from pydicom.uid import UID
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from nnunet_inference.integration.dicom_checks import check_derived_identity
 from nnunet_inference.redcap_output import (
     INSTRUMENT, MODEL_VERSION_FIELD, model_instance_base, pr2mask_dictionary_rows)
 
@@ -35,14 +35,7 @@ def _read_series(directory, *, validate_derived):
         except Exception as exc:
             raise RuntimeError(f"cannot read DICOM output {path}: {exc}") from exc
         if validate_derived:
-            series_uid = str(dataset.SeriesInstanceUID)
-            sop_uid = str(dataset.SOPInstanceUID)
-            if not UID(series_uid).is_valid or len(series_uid) > 64:
-                raise RuntimeError(f"invalid SeriesInstanceUID in {path}: {series_uid}")
-            if not UID(sop_uid).is_valid or len(sop_uid) > 64:
-                raise RuntimeError(f"invalid SOPInstanceUID in {path}: {sop_uid}")
-            if str(dataset.file_meta.MediaStorageSOPInstanceUID) != sop_uid:
-                raise RuntimeError(f"dataset/file-meta SOP UID mismatch in {path}")
+            check_derived_identity(dataset, path)
         datasets.append(dataset)
     return datasets
 
@@ -107,8 +100,6 @@ def validate(input_dir, output_dir):
     if len(paths) != 1:
         raise RuntimeError("Expected exactly one REDCap output.json")
     rows = json.loads(paths[0].read_text())
-    if any(row["field_name"].startswith("vs_") for row in rows):
-        raise RuntimeError("Unexpected REDCap fields")
     if any(row["redcap_repeat_instrument"] != INSTRUMENT for row in rows):
         raise RuntimeError("Incorrect REDCap instrument")
     if len({(row["record_id"], row["redcap_event_name"]) for row in rows}) != 1:

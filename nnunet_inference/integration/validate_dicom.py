@@ -6,28 +6,29 @@ Orientation correctness is checked separately by test_dicom_io's marker tests.
 
     NNUNET_DICOM_FIXTURE=/path/to/dicom-series \
     NNUNET_MODEL_DIR=/path/to/trained-model \
-        python -m nnunet_inference.tests.validate_dicom
+        python -m nnunet_inference.integration.validate_dicom
 """
 import os
 from pathlib import Path
 
 import numpy as np
 import pydicom
-from pydicom.uid import UID
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from nnunet_inference import dicom_io
 from nnunet_inference import pipeline
+from nnunet_inference.integration.dicom_checks import check_derived_identity
 
-HERE = Path(__file__).resolve().parent
+# The local fixture and the outputs stay in tests/, where Git ignores them.
+TESTS = Path(__file__).resolve().parents[1] / "tests"
 INPUT_DIR = Path(os.environ.get(
     "NNUNET_DICOM_FIXTURE",
-    HERE / "dicom_input",
+    TESTS / "dicom_input",
 ))
-OUTPUT_DIR = HERE / "output"
-OVERLAY_PNG = HERE / "validation_overlay.png"
+OUTPUT_DIR = TESTS / "output"
+OVERLAY_PNG = TESTS / "validation_overlay.png"
 
 
 def _dicom_identity(series_dir, *, derived=False):
@@ -41,12 +42,7 @@ def _dicom_identity(series_dir, *, derived=False):
         series.add(series_uid)
         studies.add(str(ds.StudyInstanceUID))
         if derived:
-            assert UID(series_uid).is_valid and len(series_uid) <= 64, \
-                f"invalid derived SeriesInstanceUID in {path}: {series_uid}"
-            assert UID(sop_uid).is_valid and len(sop_uid) <= 64, \
-                f"invalid derived SOPInstanceUID in {path}: {sop_uid}"
-            assert str(ds.file_meta.MediaStorageSOPInstanceUID) == sop_uid, \
-                f"dataset/file-meta SOP UID mismatch in {path}"
+            check_derived_identity(ds, path)
     return sops, series, studies
 
 

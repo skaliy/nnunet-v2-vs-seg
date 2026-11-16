@@ -3,7 +3,6 @@ release_packages/
 .bundle-stage-*/
 *.tar
 *.tar.gz
-*.sha256
 smoke-test-output/
 
 # Development-only files.
@@ -18,6 +17,8 @@ build.sh
 smoke-test.sh
 release-regression.sh
 validate_output.py
+validate_dicom.py
+dicom_checks.py
 compare_outputs.py
 release.py
 patch_regression.py
