@@ -57,11 +57,13 @@ def validate_input(input_dir):
 
 
 def publish(work_dir, output_dir, log_path):
-    """Move the finished products into output_dir: all of them or none.
+    """Move the finished products into output_dir, each one complete.
 
     They are copied to a hidden folder inside output_dir first. That folder is
     on the same file system, so each product then appears complete, by a
-    rename. A failure removes the copies and anything already renamed.
+    rename. During the renames a reader can briefly see some products and not
+    yet the others. If anything fails, the copies and the products already
+    renamed are removed, so nothing that publish wrote is left in output_dir.
     """
     stage = Path(tempfile.mkdtemp(prefix=".nnunet-publishing-", dir=output_dir))
     published = []
