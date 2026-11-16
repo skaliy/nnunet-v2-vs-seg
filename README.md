@@ -23,7 +23,7 @@ revision next to this repository:
 
 ```bash
 git clone https://github.com/MMIV-ML/fastMONAI.git ../fastMONAI
-git -C ../fastMONAI checkout 77588648b3d30ef7a0b09458dd6e9cdc19843723
+git -C ../fastMONAI checkout 3d2fad0186f7fd5f20706faa3a9b0399c2fc0c4a
 python -m pip install -e ../fastMONAI
 ```
 
