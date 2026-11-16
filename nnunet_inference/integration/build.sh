@@ -38,7 +38,7 @@ mv "${stage_dir}/model" model
 # The runtime package: its modules and data files, without tests, integration or documents.
 mkdir -p _pkg/nnunet_inference
 find "${PACKAGE_SRC}" -maxdepth 1 -type f \( -name '*.py' -o -name '*.json' -o -name '*.csv' \) \
-    -exec cp {} _pkg/nnunet_inference/ \;
+    -exec cp -t _pkg/nnunet_inference/ {} +
 if [ "${mode}" = --stage-only ]; then
     echo 'Stage-only model and registry validation complete.'
     exit 0
