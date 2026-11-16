@@ -5,9 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,3 +28,5 @@ jobs:
           for script in nnunet_inference/integration/*.sh; do bash -n "$script"; done
       - name: Unit tests
         run: python -m unittest discover -s nnunet_inference/tests -p 'test_*.py' -v
+      - name: VS workstation checks (skipped here; catches import errors)
+        run: python -m unittest discover -s projects/vs/checks -p 'test_*.py' -v

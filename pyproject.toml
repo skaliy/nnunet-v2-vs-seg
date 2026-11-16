@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "nnU-Net v2 segmentation workflow with DICOM inference and a Research PACS container"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 # Install a PyTorch build for your hardware first; see README.md.
 dependencies = [
     "nnunetv2==2.6.2",
