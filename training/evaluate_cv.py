@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
-"""Evaluate nnU-Net held-out fold predictions with the fastMONAI VS metrics."""
+"""Evaluate nnU-Net held-out fold predictions with fastMONAI's metric panel."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
-import sys
 from pathlib import Path
 
 import nibabel as nib
 import numpy as np
 import pandas as pd
-import torch
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_FASTMONAI_ROOT = REPOSITORY_ROOT.parent / "fastMONAI"
 DEFAULT_PLANS = "nnUNetResEncUNetLPlans"
 DEFAULT_CONFIGURATION = "3d_fullres"
 DEFAULT_TOLERANCES = (0.5, 1.0, 2.0)
+METRIC_NAMES = [
+    "dsc",
+    "sensitivity",
+    "precision",
+    "ldr",
+    "rve",
+    "assd_mm",
+    "hd95_mm",
+    *[f"nsd_tau{tolerance}_mm" for tolerance in DEFAULT_TOLERANCES],
+]
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -34,8 +42,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--configuration", default=DEFAULT_CONFIGURATION)
     parser.add_argument("--folds", nargs="+", type=int, default=list(range(5)))
     parser.add_argument("--nnunet-raw", type=Path)
+    parser.add_argument("--nnunet-preprocessed", type=Path)
     parser.add_argument("--nnunet-results", type=Path)
-    parser.add_argument("--fastmonai-root", type=Path, default=DEFAULT_FASTMONAI_ROOT)
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -44,9 +52,44 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-missing-folds",
         action="store_true",
-        help="Evaluate available folds instead of failing when a requested fold is absent.",
+        help=(
+            "Evaluate the folds that have predictions instead of failing when a "
+            "requested fold has none. A fold with only part of its validation "
+            "cases is always an error."
+        ),
     )
     return parser
+
+
+def _workspace_dir(argument: Path | None, variable: str) -> Path:
+    setting = argument or os.environ.get(variable)
+    if setting:
+        return Path(setting).expanduser().resolve()
+    return REPOSITORY_ROOT / "nnUNet_data" / variable
+
+
+def load_splits(raw_dataset: Path, preprocessed_dataset: Path) -> list[dict[str, list[str]]]:
+    """The splits nnU-Net trained with: the preprocessed copy, else the raw one."""
+    trained = preprocessed_dataset / "splits_final.json"
+    prepared = raw_dataset / "splits_final.json"
+    if trained.is_file() and prepared.is_file() and trained.read_bytes() != prepared.read_bytes():
+        raise SystemExit(f"splits_final.json differs between {trained} and {prepared}")
+    for path in (trained, prepared):
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+    raise SystemExit(f"splits_final.json not found in {preprocessed_dataset} or {raw_dataset}")
+
+
+def check_fold_predictions(fold: int, predicted: list[str], expected: list[str]) -> None:
+    """A fold counts only when its predictions are exactly its validation cases."""
+    missing = sorted(set(expected) - set(predicted))
+    unexpected = sorted(set(predicted) - set(expected))
+    if missing or unexpected:
+        raise SystemExit(
+            f"fold {fold} validation is not complete: {len(predicted)} predictions for "
+            f"{len(expected)} validation cases; missing {missing[:5]}, "
+            f"not in this fold {unexpected[:5]}"
+        )
 
 
 def load_mask(path: Path) -> tuple[np.ndarray, tuple[float, float, float]]:
@@ -59,50 +102,20 @@ def compute_case_metrics(
     prediction: np.ndarray,
     target: np.ndarray,
     spacing: tuple[float, float, float],
-    metrics,
+    calculate_all_metrics,
 ) -> dict[str, object]:
+    """One case's metrics from fastMONAI, in the column order of per_case.csv."""
     if prediction.shape != target.shape:
         raise ValueError(
             f"Prediction and target shapes differ: {prediction.shape} != {target.shape}"
         )
-    prediction_tensor = torch.from_numpy(prediction)
-    target_tensor = torch.from_numpy(target)
-    prediction_5d = prediction_tensor[None, None]
-    target_5d = target_tensor[None, None]
-    surface = metrics.calculate_surface_metrics(
-        prediction,
-        target,
-        spacing,
-        nsd_tolerances_mm=DEFAULT_TOLERANCES,
+    panel = calculate_all_metrics(
+        prediction, target, spacing, nsd_tolerances_mm=DEFAULT_TOLERANCES
     )
     return {
-        "dsc": float(metrics.calculate_dsc(prediction_tensor, target_tensor).item()),
-        "sensitivity": float(
-            metrics.calculate_confusion_metrics(
-                prediction_5d, target_5d, "sensitivity"
-            ).nanmean().item()
-        ),
-        "precision": float(
-            metrics.calculate_confusion_metrics(
-                prediction_5d, target_5d, "precision"
-            ).nanmean().item()
-        ),
-        "ldr": float(
-            metrics.calculate_lesion_detection_rate(
-                prediction_5d, target_5d
-            ).nanmean().item()
-        ),
-        "rve": float(
-            metrics.calculate_signed_rve(prediction_5d, target_5d).nanmean().item()
-        ),
-        "assd_mm": surface["assd_mm"],
-        "hd95_mm": surface["hd95_mm"],
-        **{
-            f"nsd_tau{tolerance}_mm": surface[f"nsd_tau{tolerance}_mm"]
-            for tolerance in DEFAULT_TOLERANCES
-        },
-        "surface_status": surface["status"],
-        "spacing_mm": "x".join(f"{value:.6g}" for value in surface["spacing_mm"]),
+        **{name: float(panel[name]) for name in METRIC_NAMES},
+        "surface_status": panel["surface_status"],
+        "spacing_mm": "x".join(f"{value:.6g}" for value in panel["spacing_mm"]),
     }
 
 
@@ -129,29 +142,18 @@ def summarize(frame: pd.DataFrame, metric_names: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def main() -> int:
-    args = _parser().parse_args()
-    fastmonai_root = args.fastmonai_root.expanduser().resolve()
-    if not fastmonai_root.is_dir():
-        raise SystemExit(f"fastMONAI checkout not found: {fastmonai_root}")
-    sys.path.insert(0, str(fastmonai_root))
-    from fastMONAI import vision_metrics as metrics
+def main(argv: list[str] | None = None, calculate_all_metrics=None) -> int:
+    args = _parser().parse_args(argv)
+    if calculate_all_metrics is None:
+        from fastMONAI.vision_metrics import calculate_all_metrics
 
-    raw_setting = args.nnunet_raw or os.environ.get("nnUNet_raw")
-    results_setting = args.nnunet_results or os.environ.get("nnUNet_results")
-    nnunet_raw = (
-        Path(raw_setting).expanduser().resolve()
-        if raw_setting
-        else REPOSITORY_ROOT / "nnUNet_data" / "nnUNet_raw"
+    raw_dataset = _workspace_dir(args.nnunet_raw, "nnUNet_raw") / args.dataset
+    preprocessed_dataset = (
+        _workspace_dir(args.nnunet_preprocessed, "nnUNet_preprocessed") / args.dataset
     )
-    nnunet_results = (
-        Path(results_setting).expanduser().resolve()
-        if results_setting
-        else REPOSITORY_ROOT / "nnUNet_data" / "nnUNet_results"
-    )
-    labels_dir = nnunet_raw / args.dataset / "labelsTr"
+    labels_dir = raw_dataset / "labelsTr"
     model_dir = (
-        nnunet_results
+        _workspace_dir(args.nnunet_results, "nnUNet_results")
         / args.dataset
         / f"{args.trainer}__{args.plans}__{args.configuration}"
     )
@@ -164,6 +166,10 @@ def main() -> int:
         raise SystemExit(f"Labels directory not found: {labels_dir}")
     if not model_dir.is_dir():
         raise SystemExit(f"Trained model directory not found: {model_dir}")
+    splits = load_splits(raw_dataset, preprocessed_dataset)
+    unknown_folds = [fold for fold in args.folds if not 0 <= fold < len(splits)]
+    if unknown_folds:
+        raise SystemExit(f"splits_final.json has {len(splits)} folds; no fold {unknown_folds}")
 
     rows = []
     missing_folds = []
@@ -173,7 +179,12 @@ def main() -> int:
         if not predictions:
             missing_folds.append(fold)
             continue
-        print(f"fold {fold}: {len(predictions)} predictions")
+        check_fold_predictions(
+            fold,
+            [path.name.removesuffix(".nii.gz") for path in predictions],
+            splits[fold]["val"],
+        )
+        print(f"fold {fold}: {len(predictions)} predictions", flush=True)
         for prediction_path in predictions:
             case_id = prediction_path.name.removesuffix(".nii.gz")
             target_path = labels_dir / f"{case_id}.nii.gz"
@@ -185,7 +196,7 @@ def main() -> int:
                 {
                     "fold": fold,
                     "case_id": case_id,
-                    **compute_case_metrics(prediction, target, spacing, metrics),
+                    **compute_case_metrics(prediction, target, spacing, calculate_all_metrics),
                 }
             )
 
@@ -205,17 +216,7 @@ def main() -> int:
         raise RuntimeError(
             f"Cases occurred in more than one validation fold: {duplicated[:10]}"
         )
-    metric_names = [
-        "dsc",
-        "sensitivity",
-        "precision",
-        "ldr",
-        "rve",
-        "assd_mm",
-        "hd95_mm",
-        *[f"nsd_tau{tolerance}_mm" for tolerance in DEFAULT_TOLERANCES],
-    ]
-    summary = summarize(frame, metric_names)
+    summary = summarize(frame, METRIC_NAMES)
     output_dir.mkdir(parents=True, exist_ok=True)
     frame.to_csv(output_dir / "per_case.csv", index=False)
     summary.to_csv(output_dir / "summary.csv", index=False)
