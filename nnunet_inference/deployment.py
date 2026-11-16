@@ -9,7 +9,7 @@ from pathlib import Path
 
 import torch
 
-from . import dicom_io
+from . import cpu, dicom_io
 from .predictor import FIVE_FOLDS, build_predictor
 
 DATASET = "Dataset003_VSSegmentationCurated"
@@ -56,23 +56,28 @@ def validate_plan(model_dir):
     return plans, model_type
 
 
+def manifest_contract(model_type):
+    """The manifest entries that this code fixes for a model type: everything
+    except the checkpoint choice, the fold members and the file hashes."""
+    spec = MODELS[model_type]
+    return dict(schema_version=2, model_type=model_type, model_name=spec["name"],
+                dataset=DATASET, plans=spec["plans"], trainer="nnUNetTrainer",
+                configuration="3d_fullres", folds=list(FIVE_FOLDS),
+                runtime=RUNTIME, cpu=cpu.contract(),
+                dicom_uid=dict(format_version=dicom_io.DICOM_UID_FORMAT_VERSION,
+                               root=dicom_io.DICOM_UID_ROOT,
+                               generation="uuid5", namespace_uuid=dicom_io.DICOM_UID_NAMESPACE,
+                               model_code=dicom_io.DICOM_MODEL_CODE,
+                               deployment_code=dicom_io.DICOM_DEPLOYMENT_CODE,
+                               output_codes=dicom_io.DICOM_OUTPUT_CODES))
+
+
 def validate_deployment(model_dir, *, verify_files=True, verify_runtime=False):
     root = Path(model_dir)
     manifest = json.loads((root / "deployment_manifest.json").read_text())
     _, model_type = validate_plan(root)
     spec = MODELS[model_type]
-    expected = dict(schema_version=2, model_type=model_type, model_name=spec["name"],
-                    dataset=DATASET, plans=spec["plans"], trainer="nnUNetTrainer",
-                    configuration="3d_fullres", folds=list(FIVE_FOLDS),
-                    runtime=RUNTIME, cpu=dict(max_threads=16, threads_per_fold=3,
-                                           memory_limit_gib=64),
-                    dicom_uid=dict(format_version=dicom_io.DICOM_UID_FORMAT_VERSION,
-                                   root=dicom_io.DICOM_UID_ROOT,
-                                   generation="uuid5", namespace_uuid=dicom_io.DICOM_UID_NAMESPACE,
-                                   model_code=dicom_io.DICOM_MODEL_CODE,
-                                   deployment_code=dicom_io.DICOM_DEPLOYMENT_CODE,
-                                   output_codes=dicom_io.DICOM_OUTPUT_CODES))
-    if any(manifest.get(k) != v for k, v in expected.items()):
+    if any(manifest.get(k) != v for k, v in manifest_contract(model_type).items()):
         raise ValueError(f"Deployment manifest does not match the {model_type} model contract")
     checkpoint = manifest.get("checkpoint")
     if checkpoint not in ("checkpoint_best.pth", "checkpoint_final.pth"):
@@ -116,7 +121,7 @@ def prepare_bundle(source, output, checkpoint="final"):
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists():
         raise FileExistsError(f"Bundle already exists: {output}")
-    torch.set_num_threads(3)
+    torch.set_num_threads(cpu.THREADS_PER_FOLD)
     with tempfile.TemporaryDirectory(prefix=".nnunet-build-", dir=output.parent) as tmp:
         stage = Path(tmp) / "model"
         stage.mkdir()
@@ -150,17 +155,7 @@ def prepare_bundle(source, output, checkpoint="final"):
             del predictor
         files = {name: file_sha256(stage / name) for name in
                  ["plans.json", "dataset.json"] + [f"fold_{f}/{checkpoint_name}" for f in FIVE_FOLDS]}
-        manifest = dict(schema_version=2, model_type=model_type, model_name=spec["name"],
-                        dataset=DATASET, plans=spec["plans"], trainer="nnUNetTrainer",
-                        configuration="3d_fullres", checkpoint=checkpoint_name,
-                        folds=list(FIVE_FOLDS), runtime=RUNTIME,
-                        cpu=dict(max_threads=16, threads_per_fold=3, memory_limit_gib=64),
-                        dicom_uid=dict(format_version=dicom_io.DICOM_UID_FORMAT_VERSION,
-                                       root=dicom_io.DICOM_UID_ROOT, generation="uuid5",
-                                       namespace_uuid=dicom_io.DICOM_UID_NAMESPACE,
-                                       model_code=dicom_io.DICOM_MODEL_CODE,
-                                       deployment_code=dicom_io.DICOM_DEPLOYMENT_CODE,
-                                       output_codes=dicom_io.DICOM_OUTPUT_CODES),
+        manifest = dict(manifest_contract(model_type), checkpoint=checkpoint_name,
                         members=members, files_sha256=files)
         manifest["bundle_sha256"] = bundle_sha256(manifest)
         (stage / "deployment_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

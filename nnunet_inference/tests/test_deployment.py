@@ -55,6 +55,20 @@ class BundleTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "file checksum"):
                     deployment.main(["--output", str(root / "model"), "--verify-only"])
 
+    def test_manifest_contract_is_what_staging_writes_and_validation_expects(self):
+        contract = deployment.manifest_contract("nnunet_large")
+        self.assertEqual(contract["cpu"], dict(max_threads=16, threads_per_fold=3, memory_limit_gib=64))
+        self.assertEqual(sorted(contract), ["configuration", "cpu", "dataset", "dicom_uid", "folds",
+                                            "model_name", "model_type", "plans", "runtime",
+                                            "schema_version", "trainer"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(deployment, "build_predictor"), redirect_stdout(io.StringIO()):
+                manifest = deployment.prepare_bundle(model_fixture(root), root / "model")
+        self.assertEqual({k: manifest[k] for k in contract}, contract)
+        self.assertEqual(sorted(set(manifest) - set(contract)),
+                         ["bundle_sha256", "checkpoint", "files_sha256", "members"])
+
     def test_wrong_plan_partial_folds_and_wrong_fold_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

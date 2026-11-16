@@ -45,7 +45,7 @@ The PACS entry uses `latest` (`ror_select_entry.txt`), so no config change is ne
 ## Run
 
 `"ROR_CONT_OPTIONS": "{{}}"` runs the defaults (TTA on); `"{{\\"tta\\":false}}"` turns TTA off.
-Needs at least 15 CPU threads and 64 GiB memory.
+Needs at least {folds * manifest["cpu"]["threads_per_fold"]} CPU threads and {manifest["cpu"]["memory_limit_gib"]} GiB memory.
 
 ## REDCap
 
