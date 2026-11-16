@@ -46,8 +46,8 @@ case002,images/case002.nii.gz,masks/case002.nii.gz,2
 
 Case IDs must be unique and `fold` must assign each case to one of five
 validation folds. Images must be `.nii.gz` files. Each mask must be on its
-image's grid: the same size and spacing, and corner voxels no more than half a
-voxel apart. Paths may be absolute or relative to `--source-root`.
+image's grid: the same size and spacing, and corner voxels no more than half the
+smallest voxel spacing apart. Paths may be absolute or relative to `--source-root`.
 
 ```bash
 DATASET_ID=1

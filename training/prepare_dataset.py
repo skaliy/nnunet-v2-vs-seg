@@ -130,9 +130,9 @@ def grid_mismatch(image_path: Path, mask_path: Path) -> tuple[str | None, float]
     """
     image, mask = _grid(image_path), _grid(mask_path)
     if image[0] != mask[0]:
-        return f"size {mask[0]} != {image[0]}", float("inf")
+        return f"size {mask[0]} in the mask, {image[0]} in the image", float("inf")
     if not np.allclose(image[1], mask[1]):
-        return f"spacing {mask[1]} != {image[1]}", float("inf")
+        return f"spacing {mask[1]} in the mask, {image[1]} in the image", float("inf")
     distances = np.linalg.norm(_corners(*image) - _corners(*mask), axis=1)
     shift = float(distances.max() / min(image[1]))
     if shift > MAX_CORNER_SHIFT:

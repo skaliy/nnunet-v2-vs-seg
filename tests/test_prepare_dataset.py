@@ -77,10 +77,12 @@ class PrepareDatasetTests(unittest.TestCase):
     def test_mask_on_another_grid_is_rejected_before_anything_is_written(self):
         mask = np.zeros(SHAPE, dtype=np.uint8)
         for case, changes, expected in (
-                ("case0", dict(spacing=(0.5, 0.5, 1.0)), "case0: spacing"),
+                ("case0", dict(spacing=(0.5, 0.5, 1.0)),
+                 r"case0: spacing \(0\.5, 0\.5, 1\.0\) in the mask, \(0\.5, 0\.5, 1\.5\) in the image"),
                 # One slice further along z: three voxels of the smallest spacing.
                 ("case1", dict(origin=(10.0, 20.0, 31.5)), r"case1: corner voxels are 3\.00 voxels apart"),
-                ("case2", dict(array=np.zeros((4, 6, 7), dtype=np.uint8)), "case2: size")):
+                ("case2", dict(array=np.zeros((4, 6, 7), dtype=np.uint8)),
+                 r"case2: size \(7, 6, 4\) in the mask, \(8, 6, 4\) in the image")):
             write_volume(self.root / "masks" / f"{case}.nii.gz", changes.pop("array", mask), **changes)
             with self.subTest(case=case), self.assertRaisesRegex(ValueError, expected):
                 self.load()
