@@ -171,7 +171,9 @@ def main(argv: list[str] | None = None, calculate_all_metrics=None) -> int:
     if unknown_folds:
         raise SystemExit(f"splits_final.json has {len(splits)} folds; no fold {unknown_folds}")
 
-    rows = []
+    # Check every requested fold before scoring any, so that an incomplete
+    # fold stops the run at once instead of after the earlier folds are scored.
+    fold_predictions = []
     missing_folds = []
     for fold in args.folds:
         validation_dir = model_dir / f"fold_{fold}" / "validation"
@@ -184,6 +186,17 @@ def main(argv: list[str] | None = None, calculate_all_metrics=None) -> int:
             [path.name.removesuffix(".nii.gz") for path in predictions],
             splits[fold]["val"],
         )
+        fold_predictions.append((fold, predictions))
+    if missing_folds and not args.allow_missing_folds:
+        raise SystemExit(
+            f"No validation predictions for requested folds: {missing_folds}. "
+            "Use --allow-missing-folds only for an intentional partial evaluation."
+        )
+    if not fold_predictions:
+        raise SystemExit("No validation predictions were found")
+
+    rows = []
+    for fold, predictions in fold_predictions:
         print(f"fold {fold}: {len(predictions)} predictions", flush=True)
         for prediction_path in predictions:
             case_id = prediction_path.name.removesuffix(".nii.gz")
@@ -200,15 +213,7 @@ def main(argv: list[str] | None = None, calculate_all_metrics=None) -> int:
                 }
             )
 
-    if missing_folds and not args.allow_missing_folds:
-        raise SystemExit(
-            f"No validation predictions for requested folds: {missing_folds}. "
-            "Use --allow-missing-folds only for an intentional partial evaluation."
-        )
-    if not rows:
-        raise SystemExit("No validation predictions were found")
-
-    frame = pd.DataFrame(rows).sort_values(["fold", "case_id"]).reset_index(drop=True)
+    frame =pd.DataFrame(rows).sort_values(["fold", "case_id"]).reset_index(drop=True)
     if frame["case_id"].duplicated().any():
         duplicated = sorted(
             frame.loc[frame["case_id"].duplicated(keep=False), "case_id"].unique()

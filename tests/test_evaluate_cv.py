@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import warnings
 
 import nibabel as nib
@@ -55,12 +56,12 @@ class EvaluateTests(unittest.TestCase):
             for case in cases:
                 write_mask(self.model / f"fold_{fold}" / "validation" / f"{case}.nii.gz", 1)
 
-    def evaluate(self, *extra):
+    def evaluate(self, *extra, metrics=fake_metrics):
         arguments = ["--dataset", DATASET, "--folds", "0", "1", "--nnunet-raw", str(self.root / "raw"),
                      "--nnunet-preprocessed", str(self.root / "preprocessed"),
                      "--nnunet-results", str(self.root / "results"), *extra]
         with redirect_stdout(io.StringIO()):
-            return evaluate_cv.main(arguments, calculate_all_metrics=fake_metrics)
+            return evaluate_cv.main(arguments, calculate_all_metrics=metrics)
 
     def test_complete_folds_write_the_same_columns_as_before(self):
         self.assertEqual(self.evaluate(), 0)
@@ -80,6 +81,18 @@ class EvaluateTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "fold 1 validation is not complete"):
             self.evaluate("--allow-missing-folds")
         self.assertFalse((self.model / "cv_metrics").exists())
+
+    def test_folds_are_checked_before_any_case_is_scored(self):
+        metrics = mock.Mock(side_effect=fake_metrics)
+        (self.model / "fold_1" / "validation" / "d.nii.gz").unlink()
+        with self.assertRaisesRegex(SystemExit, "fold 1 validation is not complete"):
+            self.evaluate(metrics=metrics)
+        metrics.assert_not_called()
+        for path in (self.model / "fold_1" / "validation").iterdir():
+            path.unlink()
+        with self.assertRaisesRegex(SystemExit, r"No validation predictions for requested folds: \[1\]"):
+            self.evaluate(metrics=metrics)
+        metrics.assert_not_called()
 
     def test_prediction_from_another_fold_is_an_error(self):
         write_mask(self.model / "fold_0" / "validation" / "c.nii.gz", 1)
