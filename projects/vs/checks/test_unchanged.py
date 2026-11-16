@@ -30,6 +30,7 @@ CASES = 344
 INDEX_SHA256 = "6ae5557a1b2bea2c4f30f5289a759d6db1b992881652458a31d5d02e82ea5cf7"
 BUNDLE_SHA256 = "e91f17a3af1621a773a562ba12e426404322119234b91195fc8ef9382b0e79cc"
 METRIC_TOLERANCE = 1e-6
+PRESENTATION_COLUMNS = {"false_positive_component_count", "volume_mm3", "quartile_label"}
 
 requires_workstation = unittest.skipUnless(
     os.environ.get("VS_CHECKS") == "1",
@@ -99,8 +100,9 @@ class VSUnchangedTests(unittest.TestCase):
                 "--nnunet-results", WORKSPACE / "nnUNet_results", "--output-dir", tmp)
             computed = pd.read_csv(Path(tmp) / "per_case.csv")
         self.assertEqual(len(computed), CASES)
-        # The stored file has three more columns, added later by presentation_summary.py.
+        # The stored file has exactly three more columns, added later by presentation_summary.py.
         self.assertLessEqual(set(computed.columns), set(stored.columns))
+        self.assertEqual(set(stored.columns) - set(computed.columns), PRESENTATION_COLUMNS)
         for column in computed.columns:
             if pd.api.types.is_numeric_dtype(computed[column]):
                 np.testing.assert_allclose(
