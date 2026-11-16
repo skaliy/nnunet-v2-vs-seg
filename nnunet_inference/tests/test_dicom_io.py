@@ -19,10 +19,26 @@ requires_dicom_fixture = unittest.skipUnless(
     HAS_DICOM_FIXTURE,
     "set NNUNET_DICOM_FIXTURE to a local DICOM series to run this test",
 )
-EXPECTED_SHAPE = (176, 512, 448)          # (z, y, x)
-EXPECTED_SPACING_ZYX = (1.1, 0.541015625, 0.541015625)
+
+
+def fixture_expectations():
+    """Shape (z, y, x), spacing (z, y, x) and PatientID, read from the fixture's
+    own headers with pydicom, so that any single series can be the fixture."""
+    datasets = [pydicom.dcmread(str(path), stop_before_pixels=True)
+                for path in sorted(FIXTURE.iterdir()) if path.is_file()]
+    first = datasets[0]
+    row, column = np.reshape(np.asarray(first.ImageOrientationPatient, dtype=float), (2, 3))
+    positions = sorted(float(np.dot(d.ImagePositionPatient, np.cross(row, column))) for d in datasets)
+    slice_spacing = float(np.median(np.diff(positions))) if len(positions) > 1 else 1.0
+    return ((len(datasets), int(first.Rows), int(first.Columns)),
+            (slice_spacing, float(first.PixelSpacing[0]), float(first.PixelSpacing[1])),
+            str(first.PatientID))
+
+
+EXPECTED_SHAPE, EXPECTED_SPACING_ZYX, EXPECTED_PATIENT_ID = (
+    fixture_expectations() if HAS_DICOM_FIXTURE else (None, None, None))
 UID_CONTEXT = dicom_io.make_uid_context(
-    model_name="ResEnc-L Dataset002 five-fold",
+    model_name="Synthetic five-fold model",
     model_version="a" * 64,
     checkpoint_name="checkpoint_final.pth",
     folds=(0, 1, 2, 3, 4),
@@ -46,7 +62,7 @@ class TestUIDGeneration(unittest.TestCase):
             source_sop_uid="source-instance", slice_index=0,
         )
         tta_context = dicom_io.make_uid_context(
-            "ResEnc-L Dataset002 five-fold", "a" * 64,
+            "Synthetic five-fold model", "a" * 64,
             "checkpoint_final.pth", (0, 1, 2, 3, 4), True,
         )
         changed_tta = dicom_io.make_derived_dicom_uid(
@@ -71,8 +87,8 @@ class TestInputBridge(unittest.TestCase):
     def test_read_series_shape_spacing_patient(self):
         series = dicom_io.read_series(FIXTURE)
         self.assertEqual(tuple(series.shape), EXPECTED_SHAPE)
-        self.assertEqual(series.slices, 176)
-        self.assertEqual(series.patientID, "VESTSC00001")
+        self.assertEqual(series.slices, EXPECTED_SHAPE[0])
+        self.assertEqual(series.patientID, EXPECTED_PATIENT_ID)
         for got, exp in zip(series.spacing, EXPECTED_SPACING_ZYX):
             self.assertAlmostEqual(float(got), exp, places=3)
 
@@ -88,7 +104,7 @@ class TestInputBridge(unittest.TestCase):
             img = sitk.ReadImage(str(target))
             arr = sitk.GetArrayFromImage(img)
             self.assertEqual(arr.shape, EXPECTED_SHAPE)
-            self.assertEqual(img.GetSize(), (448, 512, 176))   # sitk (x, y, z)
+            self.assertEqual(img.GetSize(), EXPECTED_SHAPE[::-1])   # sitk (x, y, z)
             sx, sy, sz = img.GetSpacing()
             for got, exp in zip((sz, sy, sx), EXPECTED_SPACING_ZYX):
                 self.assertAlmostEqual(got, exp, places=3)
@@ -151,7 +167,7 @@ class TestOutputBridge(unittest.TestCase):
     def test_write_mask_dicom_preserves_orientation_and_values(self):
         # asymmetric marker in a known (low-z, low-y, low-x) corner
         marker = np.zeros(EXPECTED_SHAPE, dtype=np.uint8)
-        marker[0:15, 0:25, 0:35] = 1
+        marker[tuple(slice(0, max(1, size // 4)) for size in EXPECTED_SHAPE)] = 1
         with tempfile.TemporaryDirectory() as tmp:
             nifti = self._imagedata_marker_nifti(marker, tmp)
             out_dir = Path(tmp) / "mask"
@@ -164,11 +180,12 @@ class TestOutputBridge(unittest.TestCase):
 
     def test_write_prob_dicom_scales_0_1_to_uint16(self):
         # uniform value regions; verified by value (orientation-independent)
+        third = EXPECTED_SHAPE[0] // 3      # the fixture needs at least three slices
         prob = np.full(EXPECTED_SHAPE, 0.25, dtype=np.float32)
-        prob[0:40] = 1.0
-        prob[40:80] = 0.0
+        prob[:third] = 1.0
+        prob[third:2 * third] = 0.0
         mask = np.zeros(EXPECTED_SHAPE, dtype=np.uint8)
-        mask[0:40] = 1
+        mask[:third] = 1
         with tempfile.TemporaryDirectory() as tmp:
             nifti = self._sitk_float_nifti_on_grid(prob, tmp)
             mask_nifti = self._sitk_float_nifti_on_grid(mask, tmp, "mask.nii.gz")
@@ -184,7 +201,7 @@ class TestOutputBridge(unittest.TestCase):
 
     def test_save_series_pred_derives_unique_uids(self):
         mask = np.zeros(EXPECTED_SHAPE, dtype=np.uint8)
-        mask[5, 5, 5] = 1
+        mask[tuple(size // 2 for size in EXPECTED_SHAPE)] = 1
         with tempfile.TemporaryDirectory() as tmp:
             nifti = self._imagedata_marker_nifti(mask, tmp)
             out_dir = Path(tmp) / "mask"
@@ -194,8 +211,8 @@ class TestOutputBridge(unittest.TestCase):
                 ds = pydicom.dcmread(str(f), stop_before_pixels=True)
                 sop_uids.append(ds.SOPInstanceUID)
                 series_uids.add(ds.SeriesInstanceUID)
-            self.assertEqual(len(sop_uids), 176)
-            self.assertEqual(len(set(sop_uids)), 176)        # unique per slice
+            self.assertEqual(len(sop_uids), EXPECTED_SHAPE[0])
+            self.assertEqual(len(set(sop_uids)), EXPECTED_SHAPE[0])   # unique per slice
             self.assertEqual(len(series_uids), 1)            # one series
             for path in sorted(Path(out_dir).iterdir()):
                 ds = pydicom.dcmread(str(path), stop_before_pixels=True)
@@ -211,7 +228,7 @@ class TestOutputBridge(unittest.TestCase):
         # derived, and carry readable identity outside their numeric UIDs.
         sw = ["UNITTEST-MODEL", "abc12345", "nnUNetv2 9.9.9"]
         mask = np.zeros(EXPECTED_SHAPE, dtype=np.uint8)
-        mask[5, 5, 5] = 1
+        mask[tuple(size // 2 for size in EXPECTED_SHAPE)] = 1
         prob = np.zeros(EXPECTED_SHAPE, dtype=np.float32)
         with tempfile.TemporaryDirectory() as tmp:
             mask_nifti = self._imagedata_marker_nifti(mask, tmp)
@@ -354,8 +371,10 @@ class TestOrientation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             nifti = Path(tmp) / "VS_0000.nii.gz"
             dicom_io.series_to_nifti(dicom_io.read_series(FIXTURE), nifti)
-            # the bundled sagittal MPRAGE fixture is stored PSR
-            self.assertEqual(dicom_io.get_orientation(nifti), "PSR")
+            # One letter for each anatomical axis, in the fixture's storage order.
+            code = dicom_io.get_orientation(nifti)
+            self.assertEqual(sorted(code.translate(str.maketrans("RAI", "LPS"))),
+                             ["L", "P", "S"], code)
 
     def test_reorient_to_lps_and_back_is_lossless(self):
         with tempfile.TemporaryDirectory() as tmp:
