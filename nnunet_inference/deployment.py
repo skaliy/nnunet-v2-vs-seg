@@ -178,6 +178,8 @@ def main(argv=None):
     parser.add_argument("--manifest-only", action="store_true",
                         help="with --verify-only: check the manifest without hashing the model files")
     args = parser.parse_args(argv)
+    if args.manifest_only and not args.verify_only:
+        parser.error("--manifest-only needs --verify-only")
     if args.verify_only:
         manifest = validate_deployment(args.output, verify_files=not args.manifest_only,
                                        verify_runtime=args.verify_runtime)

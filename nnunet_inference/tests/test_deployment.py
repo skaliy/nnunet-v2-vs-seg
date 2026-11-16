@@ -1,4 +1,4 @@
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 from pathlib import Path
@@ -54,6 +54,13 @@ class BundleTests(unittest.TestCase):
                 deployment.main(["--output", str(root / "model"), "--verify-only", "--manifest-only"])
                 with self.assertRaisesRegex(ValueError, "file checksum"):
                     deployment.main(["--output", str(root / "model"), "--verify-only"])
+            # Without --verify-only, --manifest-only would be ignored and a bundle built.
+            usage = io.StringIO()
+            with patch.object(deployment, "build_predictor"), redirect_stdout(io.StringIO()), \
+                    redirect_stderr(usage), self.assertRaises(SystemExit):
+                deployment.main(["--source", str(source), "--output", str(root / "other"),
+                                 "--manifest-only"])
+            self.assertIn("--manifest-only needs --verify-only", usage.getvalue())
 
     def test_manifest_contract_is_what_staging_writes_and_validation_expects(self):
         contract = deployment.manifest_contract("nnunet_large")
