@@ -51,15 +51,16 @@ def _load_predictor_class():
 def resolve_device(device):
     """Map 'auto'/'cpu'/'cuda' to a torch.device.
 
-    'auto' -> cuda if available else cpu. 'cuda' without CUDA -> cpu (notice).
+    'auto' -> cuda if available else cpu. 'cuda' without CUDA is an error:
+    a run that asked for the GPU must not silently take hours on the CPU.
     """
     if device == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device not in ("cpu", "cuda"):
         raise ValueError(f"device must be auto|cpu|cuda, got {device!r}")
     if device == "cuda" and not torch.cuda.is_available():
-        print("CUDA requested but unavailable; falling back to CPU.")
-        return torch.device("cpu")
+        raise RuntimeError("--device cuda was requested, but CUDA is not available; "
+                           "use --device cpu or --device auto")
     return torch.device(device)
 
 

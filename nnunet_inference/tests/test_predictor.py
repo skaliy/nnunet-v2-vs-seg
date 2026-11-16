@@ -20,6 +20,12 @@ class TestResolveDevice(unittest.TestCase):
     def test_cpu_is_honoured(self):
         self.assertEqual(predictor_module.resolve_device("cpu").type, "cpu")
 
+    def test_cuda_without_cuda_is_an_error(self):
+        with mock.patch.object(torch.cuda, "is_available", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "CUDA is not available"):
+                predictor_module.resolve_device("cuda")
+            self.assertEqual(predictor_module.resolve_device("auto").type, "cpu")
+
     def test_invalid_raises(self):
         with self.assertRaises(ValueError):
             predictor_module.resolve_device("tpu")
