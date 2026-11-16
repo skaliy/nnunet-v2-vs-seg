@@ -56,6 +56,35 @@ def validate_input(input_dir):
         raise ValueError("Missing input Study/Series identity")
 
 
+def publish(work_dir, output_dir, log_path):
+    """Move the finished products into output_dir: all of them or none.
+
+    They are copied to a hidden folder inside output_dir first. That folder is
+    on the same file system, so each product then appears complete, by a
+    rename. A failure removes the copies and anything already renamed.
+    """
+    stage = Path(tempfile.mkdtemp(prefix=".nnunet-publishing-", dir=output_dir))
+    published = []
+    try:
+        for name in FINAL_OUTPUTS:
+            shutil.copytree(work_dir / name, stage / name)
+        shutil.copy2(log_path, stage / LOG_NAME)
+        for path in stage.rglob("*"):
+            path.chmod(path.stat().st_mode | (0o666 if path.is_file() else 0o777))
+        for name in (*FINAL_OUTPUTS, LOG_NAME):
+            os.rename(stage / name, output_dir / name)
+            published.append(output_dir / name)
+        stage.rmdir()
+    except BaseException:
+        for path in published:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+
+
 def model_version(deployment, container):
     """REDCap model_version, e.g. 'nnunet_large 5-fold, nnunet-vsseg:20261111T090000Z'."""
     count = len(deployment["members"])
@@ -98,11 +127,7 @@ def postprocess(input_dir, work_dir, output_dir, deployment, *, version, contain
     missing = [n for n in FINAL_OUTPUTS if not (work_dir / n).is_dir()]
     if missing:
         raise RuntimeError(f"Missing required PACS products: {missing}")
-    for name in FINAL_OUTPUTS:
-        shutil.copytree(work_dir / name, output_dir / name)
-    shutil.copy2(log_path, output_dir / LOG_NAME)
-    for path in output_dir.rglob("*"):
-        path.chmod(path.stat().st_mode | (0o666 if path.is_file() else 0o777))
+    publish(work_dir, output_dir, log_path)
 
 
 def run_pacs(input_dir, output_dir, *, model_dir="/app/model", version, container,
@@ -130,10 +155,12 @@ def run_pacs(input_dir, output_dir, *, model_dir="/app/model", version, containe
                     container=container, use_tta=use_tta, pr2mask_dir=pr2mask_dir)
     peak_path = Path("/sys/fs/cgroup/memory.peak")
     peak = int(peak_path.read_text()) if peak_path.exists() else None
-    (output_dir / "runtime_resources.json").write_text(json.dumps(dict(
+    resources = output_dir / ".runtime_resources.json.writing"
+    resources.write_text(json.dumps(dict(
         available_cpu_ids=sorted(os.sched_getaffinity(0)), threads_per_fold=THREADS_PER_FOLD,
         cgroup_memory_peak_bytes=peak, deployment_version=version,
         bundle_sha256=deployment["bundle_sha256"], tta=use_tta), indent=2) + "\n")
+    os.replace(resources, output_dir / "runtime_resources.json")
     return deployment
 
 
