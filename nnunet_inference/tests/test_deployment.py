@@ -1,3 +1,5 @@
+from contextlib import redirect_stdout
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -47,6 +49,11 @@ class BundleTests(unittest.TestCase):
             (root / "model/fold_0/checkpoint_final.pth").write_bytes(b"corrupted")
             with self.assertRaisesRegex(ValueError, "file checksum"):
                 deployment.validate_deployment(root / "model")
+            # --manifest-only reads the manifest without hashing the files again.
+            with redirect_stdout(io.StringIO()):
+                deployment.main(["--output", str(root / "model"), "--verify-only", "--manifest-only"])
+                with self.assertRaisesRegex(ValueError, "file checksum"):
+                    deployment.main(["--output", str(root / "model"), "--verify-only"])
 
     def test_wrong_plan_partial_folds_and_wrong_fold_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

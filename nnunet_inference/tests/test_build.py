@@ -102,4 +102,8 @@ esac
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(commands, [])
         self.assertTrue((integration / "model").is_dir())
-        self.assertTrue((integration / "_pkg/nnunet_inference").is_dir())
+        source = Path(__file__).resolve().parents[1]
+        self.assertEqual(sorted(p.name for p in (integration / "_pkg/nnunet_inference").iterdir()),
+                         sorted(p.name for p in source.iterdir()
+                                if p.suffix in (".py", ".json", ".csv")))
+        self.assertIn("pacs.py", {p.name for p in (integration / "_pkg/nnunet_inference").iterdir()})

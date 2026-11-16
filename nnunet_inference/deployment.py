@@ -173,16 +173,19 @@ def prepare_bundle(source, output, checkpoint="final"):
     return manifest
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--checkpoint", choices=("best", "final"), default="final")
     parser.add_argument("--verify-only", action="store_true")
     parser.add_argument("--verify-runtime", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--manifest-only", action="store_true",
+                        help="with --verify-only: check the manifest without hashing the model files")
+    args = parser.parse_args(argv)
     if args.verify_only:
-        manifest = validate_deployment(args.output, verify_runtime=args.verify_runtime)
+        manifest = validate_deployment(args.output, verify_files=not args.manifest_only,
+                                       verify_runtime=args.verify_runtime)
     else:
         if args.source is None:
             parser.error("--source is required to prepare a bundle")
