@@ -11,7 +11,8 @@ readonly PYTHON_BIN="${NNUNET_PYTHON:-python}"
 readonly IMAGE_NAME="${IMAGE_NAME:-nnunet-vsseg}"
 readonly VERSION="${VERSION:-$(date -u +%Y%m%dT%H%M%SZ)}"
 readonly DATED_TAG="${IMAGE_NAME}:${VERSION}"
-readonly BASE_IMAGE=haukebartsch/fiona-component-python:latest
+# FIONA_BASE pins the base, for example to rebuild on the digest of an earlier release.
+readonly BASE_IMAGE="${FIONA_BASE:-haukebartsch/fiona-component-python:latest}"
 mode="${1:---build}"
 case "${mode}" in
     --stage-only|--build|--save) ;;

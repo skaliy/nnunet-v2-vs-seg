@@ -16,7 +16,9 @@ smoke-test-output/
 # Host-side helpers and documentation are not needed at runtime.
 build.sh
 smoke-test.sh
+release-regression.sh
 validate_output.py
+compare_outputs.py
 release.py
 patch_regression.py
 README.md

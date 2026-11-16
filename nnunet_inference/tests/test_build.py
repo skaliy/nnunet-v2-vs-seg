@@ -8,7 +8,7 @@ import unittest
 
 
 class BuildTests(unittest.TestCase):
-    def run_build(self, *, mode="--build", fail_verification=False):
+    def run_build(self, *, mode="--build", fail_verification=False, **environment):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -47,7 +47,8 @@ fi
             "docker": r'''#!/bin/bash
 set -euo pipefail
 case "$1" in
-    pull|build) exit 0 ;;
+    pull) printf '%s\n' "$2" >> "$BUILD_TEST_PULLS"; exit 0 ;;
+    build) exit 0 ;;
     image) printf '%s\n' 'example/fiona@sha256:0000000000000000000000000000000000000000000000000000000000000000' ;;
     run) exec bash --noprofile --norc -c "${@: -1}" ;;
     *) exit 2 ;;
@@ -62,12 +63,17 @@ esac
         env = dict(os.environ, PATH=str(binaries) + ":" + os.environ["PATH"],
                    NNUNET_PYTHON=str(binaries / "python"), NNUNET_MODEL_SRC=str(original),
                    VERSION="cleanup-test", IMAGE_NAME="nnunet-build-test",
-                   BUILD_TEST_LOG=str(log), BUILD_TEST_FAIL=str(int(fail_verification)))
+                   BUILD_TEST_LOG=str(log), BUILD_TEST_FAIL=str(int(fail_verification)),
+                   BUILD_TEST_PULLS=str(root / "pulls.log"))
+        env.pop("FIONA_BASE", None)
+        env.update(environment)
         result = subprocess.run(["bash", str(integration / "build.sh"), mode],
                                 env=env, capture_output=True, text=True)
         commands = log.read_text().splitlines() if log.exists() else []
         self.assertEqual((original / "checkpoint.pth").read_bytes(), b"preserve trained weights")
         self.assertFalse(list(integration.glob(".bundle-stage-*")))
+        pulls = root / "pulls.log"
+        self.pulled = pulls.read_text().splitlines() if pulls.exists() else []
         return result, integration, commands
 
     def test_failed_model_verification_stops_before_help_can_hide_it(self):
@@ -81,6 +87,15 @@ esac
         self.assertEqual(commands, ["verification", "help"])
         self.assertFalse((integration / "model").exists())
         self.assertFalse((integration / "_pkg").exists())
+
+    def test_base_image_defaults_to_latest_and_can_be_pinned(self):
+        result, _, _ = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.pulled, ["haukebartsch/fiona-component-python:latest"])
+        pinned = "haukebartsch/fiona-component-python@sha256:" + "1" * 64
+        result, _, _ = self.run_build(FIONA_BASE=pinned)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.pulled, [pinned])
 
     def test_stage_only_retains_copies_without_running_docker(self):
         result, integration, commands = self.run_build(mode="--stage-only")

@@ -180,6 +180,25 @@ default. Add `--folds 0,1` for a smaller diagnostic regression or `--tta false`
 to run only the non-TTA condition. Completed production qualification should
 record the full five-fold results.
 
+### Regression against a release
+
+`release-regression.sh` checks that a new build gives the same outputs as a released
+image on one DICOM series:
+
+```bash
+./release-regression.sh nnunet-vsseg:<RELEASE> nnunet-vsseg-check:<RELEASE> \
+    /path/to/test-dicom /path/to/work-dir
+```
+
+It runs the release twice and the candidate once, with TTA on and then off (six runs).
+`compare_outputs.py` keeps what the two release runs agree on (pixel data, UIDs, tags,
+REDCap rows). The candidate must match all of it and must not write anything that the
+release runs did not write. Build the candidate with the release's `VERSION` under
+another `IMAGE_NAME`, on the release's Fiona base
+(`FIONA_BASE=haukebartsch/fiona-component-python@sha256:<digest>`); the script gives it
+the release's `CONTAINER_VERSION` for the run, so the image name is not a difference.
+The date is drawn into the fused images, so use a new work directory each day.
+
 `--save` writes `release_packages/<VERSION>/` with the Docker archive, a short README
 (`release.py`: load, image ID, run, REDCap) and `ror_select_entry.txt`. Don't add a
 `.sha256`; the image ID after `docker load` is the check. Add what changed and what was
