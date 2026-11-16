@@ -62,3 +62,9 @@ venv/
 /.claude/
 /.superpowers/
 /AGENTS.md
+
+# Packaging and workstation check scratch
+*.egg-info/
+/build/
+/dist/
+/.vs-check-*/

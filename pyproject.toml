@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nnunet-v2-vs-seg"
+version = "0.1.0"
+description = "nnU-Net v2 segmentation workflow with DICOM inference and a Research PACS container"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+# Install a PyTorch build for your hardware first; see README.md.
+dependencies = [
+    "nnunetv2==2.6.2",
+    "dynamic-network-architectures==0.4.2",
+    "imagedata==3.9.7",
+    "SimpleITK==2.5.2",
+    "pydicom==3.0.2",
+    "numpy==2.2.6",
+    "pandas",
+    "scipy",
+    "nibabel",
+]
+
+[project.optional-dependencies]
+test = ["matplotlib"]
+
+[tool.setuptools.packages.find]
+include = ["nnunet_inference*"]
+
+[tool.setuptools.package-data]
+nnunet_inference = ["redcap_model_instances.json", "pr2mask_dictionary.csv"]
