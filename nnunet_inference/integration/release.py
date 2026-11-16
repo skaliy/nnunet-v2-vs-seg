@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 import subprocess
 
+PACKAGE = "nnunet_inference"
+PACKAGE_SUFFIXES = {".py", ".json", ".csv"}  # the files build.sh copies from it
+
 
 def inspect(image):
     return json.loads(subprocess.check_output(["docker", "image", "inspect", image]))[0]
@@ -58,6 +61,25 @@ Built from nnunet-v2-vs-seg commit {source} (Fiona base {base_ref.rsplit(":", 1)
 '''
 
 
+def source_description(project):
+    """The commit the image was built from, noting changes that the image may contain.
+
+    build.sh copies the package's top-level .py, .json and .csv files as they are
+    on disk, so such a file that Git does not track, ignored or not, is a change.
+    """
+    def git(*arguments):
+        return subprocess.check_output(["git", "-C", str(project), *arguments], text=True)
+
+    source = git("rev-parse", "--short=7", "HEAD").strip()
+    changed = git("status", "--porcelain", "--untracked-files=no").strip()
+    untracked = map(Path, git("ls-files", "--others", "-z", "--", PACKAGE).split("\0"))
+    copied = [path for path in untracked
+              if path.parent == Path(PACKAGE) and path.suffix in PACKAGE_SUFFIXES]
+    if changed or copied:
+        source += " with uncommitted changes"
+    return source
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("release_dir", type=Path)
@@ -68,10 +90,7 @@ def main():
     project = integration.parent.parent
     manifest = json.loads((integration / "model/deployment_manifest.json").read_text())
     registry = json.loads((integration / "_pkg/nnunet_inference/redcap_model_instances.json").read_text())
-    git = ["git", "-C", str(project)]
-    source = subprocess.check_output([*git, "rev-parse", "--short=7", "HEAD"], text=True).strip()
-    if subprocess.check_output([*git, "status", "--porcelain", "--untracked-files=no"], text=True).strip():
-        source += " with uncommitted changes"
+    source = source_description(project)
     (args.release_dir / "README.md").write_text(handoff_readme(
         args.image_tag, inspect(args.image_tag)["Id"], args.base_image, source,
         registry[manifest["bundle_sha256"]], manifest))
