@@ -132,7 +132,8 @@ the same as fastMONAI:
 - **One instance per region.** pr2mask numbers the mask's 26-connected regions 1, 2, 3, ...
   Region k goes to repeat instance base + k (101, 102, ... for the large bundle). Only
   instances with a region are written. A rerun overwrites the bundle's instances; if it finds
-  fewer regions, the earlier run's higher instances stay.
+  fewer regions, the earlier run's higher instances stay. A prediction with 100 or more
+  separate regions makes the run fail, so nothing is sent to PACS or REDCap.
 - **Empty mask:** instance base + 1 with blank columns, so REDCap shows the model ran. It is
   routed by the source PatientID and ReferringPhysicianName (`EventName:` removed), like
   pr2mask. pr2mask lists no columns then, so the exporter takes them from
