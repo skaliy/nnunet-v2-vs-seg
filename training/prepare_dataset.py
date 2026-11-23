@@ -30,6 +30,8 @@ from scipy.ndimage import label
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_COLUMNS = {"case_id", "t1_img_path", "t1_seg_path", "fold"}
+# Read as written: type inference would turn the case ID 001 into 1.
+TEXT_COLUMNS = {"case_id": str, "t1_img_path": str, "t1_seg_path": str}
 DATASET_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]*$")
 # nnU-Net pairs image and mask voxels by array index and ignores the header.
 # Corner voxels further apart than this, in voxels, mean the mask belongs to
@@ -153,19 +155,30 @@ def grid_mismatch(image_path: Path, mask_path: Path) -> tuple[str | None, float]
     return None, shift
 
 
+def _fold(value: object, case_id: str) -> int:
+    """A fold is a whole number: 1 and 1.0 are fold 1; 1.5 is not a fold."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = float("nan")
+    if not number.is_integer():
+        raise ValueError(f"Invalid fold for {case_id}: {value!r}; folds are whole numbers")
+    return int(number)
+
+
 def load_cases(data_csv: Path, source_root: Path) -> list[Case]:
     """Load and fully validate the dataset index before any output is written."""
 
     if not data_csv.is_file():
         raise FileNotFoundError(f"Dataset CSV not found: {data_csv}")
-    frame = pd.read_csv(data_csv)
+    frame = pd.read_csv(data_csv, dtype=TEXT_COLUMNS)
     missing_columns = sorted(REQUIRED_COLUMNS - set(frame.columns))
     if missing_columns:
         raise ValueError(f"Dataset CSV is missing columns: {missing_columns}")
     if frame[list(REQUIRED_COLUMNS)].isna().any().any():
         raise ValueError("case_id, image path, mask path, and fold must all be present")
 
-    case_ids = frame["case_id"].astype(str)
+    case_ids = frame["case_id"].astype(str).str.strip()
     if case_ids.duplicated().any():
         duplicates = sorted(case_ids[case_ids.duplicated(keep=False)].unique())
         raise ValueError(f"Duplicate case_id values: {duplicates[:10]}")
@@ -176,10 +189,7 @@ def load_cases(data_csv: Path, source_root: Path) -> list[Case]:
         case_id = str(row.case_id).strip()
         if not case_id or "/" in case_id or "\\" in case_id:
             raise ValueError(f"Invalid case_id: {case_id!r}")
-        try:
-            fold = int(row.fold)
-        except (TypeError, ValueError) as error:
-            raise ValueError(f"Invalid fold for {case_id}: {row.fold!r}") from error
+        fold = _fold(row.fold, case_id)
 
         image_path = _resolve_source(str(row.t1_img_path), source_root)
         mask_path = _resolve_source(str(row.t1_seg_path), source_root)
@@ -194,6 +204,18 @@ def load_cases(data_csv: Path, source_root: Path) -> list[Case]:
         raise FileNotFoundError(
             f"Missing source files ({len(missing_files)} total; first 10):\n  {shown}"
         )
+    # A scan listed under two case IDs could be trained on and validated on.
+    for kind, attribute in (("image", "image_path"), ("mask", "mask_path")):
+        owners: dict[Path, list[str]] = {}
+        for case in cases:
+            owners.setdefault(getattr(case, attribute), []).append(case.case_id)
+        shared = [f"{path}: {', '.join(ids)}" for path, ids in owners.items() if len(ids) > 1]
+        if shared:
+            shown = "\n  ".join(shared[:10])
+            raise ValueError(
+                f"The same {kind} file is listed for more than one case "
+                f"({len(shared)} files; first 10):\n  {shown}"
+            )
     # Images are linked into the dataset under a .nii.gz name, not converted.
     other_endings = [case.image_path for case in cases if not case.image_path.name.endswith(".nii.gz")]
     if other_endings:
@@ -215,8 +237,14 @@ def load_cases(data_csv: Path, source_root: Path) -> list[Case]:
             f"their header (corner voxels up to {max(shifts):.2f} voxels apart; "
             f"the limit is {MAX_CORNER_SHIFT})"
         )
-    if len(set(case.fold for case in cases)) < 2:
+    folds = sorted(set(case.fold for case in cases))
+    if len(folds) < 2:
         raise ValueError("At least two folds are required to create cross-validation splits")
+    if len(folds) != 5:
+        print(
+            f"Note: the index has {len(folds)} folds; only nnU-Net folds 0-{len(folds) - 1} "
+            "exist (nnU-Net would train any further fold on a random split)"
+        )
     return cases
 
 
@@ -252,6 +280,8 @@ def convert_mask(source: Path, destination: Path, label_mode: str) -> int:
 
 
 def _place_image(source: Path, destination: Path, copy_images: bool) -> str:
+    if destination.exists():
+        raise FileExistsError(f"Image already placed: {destination}")
     if copy_images:
         shutil.copy2(source, destination)
         return "copied"
