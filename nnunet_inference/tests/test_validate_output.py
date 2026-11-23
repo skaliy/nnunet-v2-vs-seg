@@ -122,7 +122,7 @@ class ValidateOutputTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, r"^labels slice 1 .*FrameOfReferenceUID"):
             self.validate(output)
 
-    def test_z_flipped_mask_fails(self):
+    def test_mask_whose_slices_run_the_other_way_along_the_slice_normal_fails(self):
         """A non-empty mask, with its REDCap rows, whose slices run from the first input
         slice the other way along the slice normal."""
         output = self.build(foreground=2, labels=lambda index: dict(position=(0, 0, -index)))
@@ -164,6 +164,26 @@ class ValidateOutputTests(unittest.TestCase):
         directory.FileSetID = "SYNTHETIC"
         directory.save_as(self.input / "DICOMDIR", enforce_file_format=True)
         self.assertIn("validation: OK", self.validate(self.build()))
+
+    def test_dicom_objects_in_the_input_that_are_not_image_slices_are_skipped(self):
+        # A structured report filed in another series of the study: it has a
+        # SeriesInstanceUID but no ImagePositionPatient or Rows, so the container
+        # does not count it as a slice.
+        meta = FileMetaDataset()
+        meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.88.11"   # Basic Text SR
+        meta.MediaStorageSOPInstanceUID = "1.2.3.40.1"
+        meta.TransferSyntaxUID = "1.2.840.10008.1.2.1"
+        report = FileDataset(str(self.input / "report.dcm"), {}, file_meta=meta,
+                             preamble=b"\0" * 128)
+        for keyword, value in dict(SOPClassUID=meta.MediaStorageSOPClassUID,
+                                   SOPInstanceUID="1.2.3.40.1", StudyInstanceUID="1.2.3",
+                                   SeriesInstanceUID="1.2.3.40", Modality="SR",
+                                   PatientID="SYNTHETIC").items():
+            setattr(report, keyword, value)
+        report.save_as(self.input / "report.dcm", enforce_file_format=True)
+        for foreground in (0, 2):
+            with self.subTest(foreground=foreground):
+                self.assertIn("validation: OK", self.validate(self.build(foreground=foreground)))
 
     def test_input_without_a_dicom_series_is_named_as_the_input(self):
         output = self.build()

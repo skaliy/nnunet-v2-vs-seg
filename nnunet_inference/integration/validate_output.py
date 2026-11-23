@@ -32,8 +32,9 @@ def _dicom_files(directory):
 
 
 def _read_input(directory):
-    """The input series. Files that are not DICOM or have no SeriesInstanceUID
-    (notes, a DICOMDIR) are skipped, as the container skips them."""
+    """The input series: its image slices, DICOM files with a SeriesInstanceUID,
+    ImagePositionPatient and Rows. Other files (notes, a DICOMDIR, a structured
+    report) are skipped, as the container skips them."""
     datasets = []
     for path in sorted(path for path in Path(directory).rglob("*") if path.is_file()):
         if not is_dicom(path):
@@ -42,7 +43,8 @@ def _read_input(directory):
             dataset = dcmread(str(path))
         except Exception as exc:
             raise RuntimeError(f"cannot read DICOM input {path}: {exc}") from exc
-        if "SeriesInstanceUID" in dataset:
+        if all(keyword in dataset for keyword in
+               ("SeriesInstanceUID", "ImagePositionPatient", "Rows")):
             datasets.append(dataset)
     if not datasets:
         raise RuntimeError(f"no DICOM series found in the input {directory}")
