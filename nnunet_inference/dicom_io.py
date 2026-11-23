@@ -278,11 +278,13 @@ def _write_dicom_from_nifti(nifti_path, template_dir, out_dir, output_kind,
     if template.dtype != np.uint16:
         # imagedata reads a rescaled source as float and a signed one as int16,
         # and would then rescale or wrap what we write. Both outputs are stored
-        # unsigned 16-bit. The copy gets a new series UID from imagedata; keep
-        # the source's, from which the output UIDs are derived.
-        source_series_uid = template.seriesInstanceUID
-        template = template.astype(np.uint16)
-        template.seriesInstanceUID = source_series_uid
+        # unsigned 16-bit. The copy gets a new series UID from imagedata, and
+        # imagedata 3.9.7 leaves out the SOP UIDs (3.9.6 keeps them). Set both
+        # from the source: the output UIDs are derived from them.
+        source = template
+        template = source.astype(np.uint16)
+        template.seriesInstanceUID = source.seriesInstanceUID
+        template.SOPInstanceUIDs = dict(source.SOPInstanceUIDs)
     if software_versions:
         template.setDicomAttribute("SoftwareVersions", list(software_versions))
     marker = "MASK" if output_kind == "segmentation" else "PROBABILITY"

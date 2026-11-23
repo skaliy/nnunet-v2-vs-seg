@@ -1,14 +1,16 @@
 """Unit tests for nnunet_inference.dicom_io (geometry I/O)."""
-from contextlib import redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stdout
 import io
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pydicom
 import SimpleITK as sitk
+from imagedata.header import Header
 from imagedata.series import Series
 from pydicom.uid import UID
 
@@ -137,6 +139,36 @@ class TestVoteMapValues(unittest.TestCase):
         self.assertLess(dicom_io.VOTE_MAP_BLUE - 1, 0.5 * dicom_io.VOTE_MAP_MAX)
 
 
+@contextmanager
+def imagedata_397_header_copies():
+    """Copy Series headers as imagedata 3.9.7, the image's version, does.
+
+    In 3.9.7, Header.add_template carries SOPInstanceUIDs over only from a
+    header with ``keep_uid``, which a Series read from disk does not have, and
+    Series.SOPInstanceUIDs makes up new UIDs when none are set. 3.9.6 copies
+    them always. Under 3.9.7 this behaves as imagedata itself does for these
+    single-tag stacks, so the tests that use it mean the same in both versions.
+    """
+    add_template = Header.add_template
+
+    def add_template_397(self, template):
+        kept = getattr(self, "SOPInstanceUIDs", None)
+        add_template(self, template)
+        if template is not None and "keep_uid" not in template.__dict__:
+            self.SOPInstanceUIDs = kept
+
+    def sop_instance_uids_397(series):
+        if series.header.SOPInstanceUIDs is None:
+            series.header.SOPInstanceUIDs = {(0, index): series.header.new_uid()
+                                             for index in range(series.slices)}
+        return series.header.SOPInstanceUIDs
+
+    with mock.patch.object(Header, "add_template", add_template_397), \
+            mock.patch.object(Series, "SOPInstanceUIDs",
+                              property(sop_instance_uids_397, Series.SOPInstanceUIDs.fset)):
+        yield
+
+
 class TestDerivedValues(unittest.TestCase):
     """The vote map and the mask store exactly the values we compute, as unsigned
     16-bit without rescale, whatever the source's pixel representation."""
@@ -148,8 +180,8 @@ class TestDerivedValues(unittest.TestCase):
     }
     VERSIONS = ["Synthetic five-fold model", "aaaaaaaa", "nnUNetv2 test"]
 
-    def _write(self, root, tags, probability, mask):
-        """Write a four-slice source with `tags`, then our vote map and mask."""
+    def _source(self, root, tags, probability, mask):
+        """Write a four-slice source with `tags` and the prediction NIfTIs on its grid."""
         source = root / "source"
         for index in range(4):
             write_image(source / f"{index}.dcm", index, sop_uid=f"1.2.3.4.{index + 1}",
@@ -163,15 +195,52 @@ class TestDerivedValues(unittest.TestCase):
             image.CopyInformation(reference)
             paths[name] = root / f"{name}.nii.gz"
             sitk.WriteImage(image, str(paths[name]))
-        dicom_io.write_prob_dicom(paths["prob"], source, root / "vote_map", UID_CONTEXT,
+        return source, paths
+
+    def _derive(self, source, paths, out_root):
+        """Write our vote map and mask of `source` under `out_root`."""
+        dicom_io.write_prob_dicom(paths["prob"], source, out_root / "vote_map", UID_CONTEXT,
                                   mask_nifti=paths["mask"], software_versions=self.VERSIONS)
-        dicom_io.write_mask_dicom(paths["mask"], source, root / "mask", UID_CONTEXT,
+        dicom_io.write_mask_dicom(paths["mask"], source, out_root / "mask", UID_CONTEXT,
                                   software_versions=self.VERSIONS)
+
+    def _write(self, root, tags, probability, mask):
+        """Write a four-slice source with `tags`, then our vote map and mask."""
+        source, paths = self._source(root, tags, probability, mask)
+        self._derive(source, paths, root)
         # The write path reads both NIfTIs with imagedata; so do the expectations.
         expected_votes = dicom_io.vote_map_values(np.asarray(Series(str(paths["prob"]))),
                                                   np.asarray(Series(str(paths["mask"]))) > 0)
         expected_mask = (np.asarray(Series(str(paths["mask"]))) > 0).astype(np.uint16)
         return source, expected_votes, expected_mask
+
+    @staticmethod
+    def _position(dataset):
+        return tuple(float(v) for v in dataset.ImagePositionPatient)
+
+    def _expected_sop_uids(self, source, output_kind):
+        """Derived SOP UID by slice position, read from the source files alone.
+
+        Each comes from the SOP UID of the source slice at that position and the
+        slice's index along the slice normal (imagedata's slice order)."""
+        datasets = [pydicom.dcmread(str(p), stop_before_pixels=True)
+                    for p in Path(source).iterdir()]
+        row, column = np.reshape(np.asarray(datasets[0].ImageOrientationPatient, float), (2, 3))
+        normal = np.cross(row, column)
+        datasets.sort(key=lambda d: float(np.dot(np.asarray(d.ImagePositionPatient, float),
+                                                 normal)))
+        return {self._position(d): dicom_io.make_derived_dicom_uid(
+                    UID_CONTEXT, str(d.SeriesInstanceUID), output_kind,
+                    source_sop_uid=str(d.SOPInstanceUID), slice_index=index)
+                for index, d in enumerate(datasets)}
+
+    def _sop_uids(self, out_dir):
+        """SOP UID by slice position of a written series."""
+        datasets = [pydicom.dcmread(str(p), stop_before_pixels=True)
+                    for p in Path(out_dir).iterdir()]
+        for d in datasets:
+            self.assertEqual(str(d.file_meta.MediaStorageSOPInstanceUID), str(d.SOPInstanceUID))
+        return {self._position(d): str(d.SOPInstanceUID) for d in datasets}
 
     def _stored(self, source, out_dir, output_kind):
         """Check the written headers and return the stored values (z, y, x)."""
@@ -180,6 +249,8 @@ class TestDerivedValues(unittest.TestCase):
                             for p in Path(source).iterdir()}
         self.assertEqual({tuple(float(v) for v in d.ImagePositionPatient) for d in datasets},
                          source_positions)
+        # Deterministic and bound to the source instances.
+        self.assertEqual(self._sop_uids(out_dir), self._expected_sop_uids(source, output_kind))
         for d in datasets:
             self.assertEqual(d.PixelRepresentation, 0)
             self.assertEqual(d.BitsAllocated, 16)
@@ -232,6 +303,29 @@ class TestDerivedValues(unittest.TestCase):
                 np.testing.assert_array_equal(votes, expected_votes)
                 self.assertEqual(int(votes.max()), 29491)
                 self.assertEqual(int(self._stored(source, root / "mask", "segmentation").max()), 0)
+
+    def test_sop_uids_come_from_the_source_instances_and_repeat(self):
+        # Converting the template to uint16 copies its header. imagedata 3.9.7
+        # leaves the SOP UIDs out of that copy and then makes up new ones, so
+        # each subtest also runs with 3.9.7's header copies.
+        shape = (4, 6, 6)
+        probability = np.zeros(shape, dtype=np.float32)
+        probability[1:3, 2:4, 2:4] = 0.9
+        mask = (probability > 0.5).astype(np.uint8)
+        for label, tags in self.SOURCES.items():
+            for copies in ("installed imagedata", "imagedata 3.9.7 header copies"):
+                with self.subTest(source=label, copies=copies), \
+                        tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    emulate = copies != "installed imagedata"
+                    with imagedata_397_header_copies() if emulate else nullcontext():
+                        source, paths = self._source(root, tags, probability, mask)
+                        for run in ("first", "second"):
+                            self._derive(source, paths, root / run)
+                    for kind, name in (("probability", "vote_map"), ("segmentation", "mask")):
+                        first = self._sop_uids(root / "first" / name)
+                        self.assertEqual(first, self._expected_sop_uids(source, kind))
+                        self.assertEqual(self._sop_uids(root / "second" / name), first)
 
 
 AXIAL = (1, 0, 0, 0, 1, 0)
