@@ -9,8 +9,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import pydicom
+from pydicom.dataset import Dataset
+from pydicom.sequence import Sequence
+
 from nnunet_inference import pacs
 from nnunet_inference.redcap_output import MODEL_INSTANCES_PATH
+from nnunet_inference.tests.synthetic import write_image
 from nnunet_inference.tests.test_redcap_output import fixture
 
 
@@ -208,6 +213,28 @@ class PacsTests(unittest.TestCase):
                     pacs.publish(work, output, log)
             self.assertFalse(any(output.iterdir()))
             self.assertTrue(all((work / name).is_dir() for name in pacs.FINAL_OUTPUTS))
+
+    def test_multi_frame_input_is_named_in_the_error(self):
+        frame = Dataset()
+        frame.PlanePositionSequence = Sequence([Dataset()])
+        frame.PlanePositionSequence[0].ImagePositionPatient = [0, 0, 0]
+        # Enhanced MR keeps the slice positions in the per-frame functional groups.
+        for tags in (dict(NumberOfFrames="3"),
+                     dict(NumberOfFrames="1", PerFrameFunctionalGroupsSequence=Sequence([frame]))):
+            with self.subTest(tags=sorted(tags)), tempfile.TemporaryDirectory() as tmp:
+                path = write_image(Path(tmp) / "enhanced.dcm", 0, **tags)
+                dataset = pydicom.dcmread(str(path))
+                del dataset.ImagePositionPatient
+                dataset.save_as(str(path))
+                with self.assertRaisesRegex(ValueError, r"multi-frame \(Enhanced\) DICOM input "
+                                                        r"is not supported"):
+                    pacs.validate_input(tmp)
+
+    def test_single_frame_input_with_one_frame_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for index in range(3):
+                write_image(Path(tmp) / f"{index}.dcm", index, NumberOfFrames="1")
+            pacs.validate_input(tmp)
 
     def test_model_version_names_model_folds_and_image(self):
         members = [dict(member_id=f"fold_{n}") for n in range(5)]

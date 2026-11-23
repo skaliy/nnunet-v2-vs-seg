@@ -45,6 +45,10 @@ def _json(value):
 def _series(directory, *, pixels=False):
     datasets = [dcmread(p, stop_before_pixels=not pixels)
                 for p in Path(directory).rglob('*') if p.is_file() and is_dicom(p)]
+    # Enhanced (multi-frame) objects keep their slice positions per frame.
+    if any(int(d.get('NumberOfFrames') or 1) > 1 or 'PerFrameFunctionalGroupsSequence' in d
+           for d in datasets):
+        raise ValueError('multi-frame (Enhanced) DICOM input is not supported')
     datasets = [d for d in datasets if hasattr(d, 'ImagePositionPatient') and hasattr(d, 'Rows')]
     if not datasets:
         raise ValueError('No DICOM image slices found')
