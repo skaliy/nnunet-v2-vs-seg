@@ -1,4 +1,6 @@
 """Unit tests for nnunet_inference.dicom_io (geometry I/O)."""
+from contextlib import redirect_stdout
+import io
 import os
 import tempfile
 import unittest
@@ -230,6 +232,131 @@ class TestDerivedValues(unittest.TestCase):
                 np.testing.assert_array_equal(votes, expected_votes)
                 self.assertEqual(int(votes.max()), 29491)
                 self.assertEqual(int(self._stored(source, root / "mask", "segmentation").max()), 0)
+
+
+AXIAL = (1, 0, 0, 0, 1, 0)
+SAGITTAL = (0, 1, 0, 0, 0, -1)
+
+
+def write_stack(directory, count, *, step=1.0, orientation=AXIAL, skip=(), **tags):
+    """Write `count` slices `step` mm apart along the slice normal, leaving out
+    the indices in `skip`; return (position, pixels, path) for each written slice."""
+    row, column = np.asarray(orientation[:3], float), np.asarray(orientation[3:], float)
+    normal = np.cross(row, column)
+    rng = np.random.default_rng(count)
+    slices = []
+    for index in range(count):
+        pixels = rng.integers(0, 1000, (4, 5))
+        if index in skip:
+            continue
+        position = np.array([3.0, -4.0, 5.0]) + index * step * normal
+        path = write_image(Path(directory) / f"{index:03d}.dcm", index, orientation=orientation,
+                           position=[f"{v:.12g}" for v in position], pixels=pixels, **tags)
+        slices.append((position, pixels, path))
+    return slices
+
+
+class TestSliceStack(unittest.TestCase):
+    """The stack given to nnU-Net is complete, evenly spaced, and spaced as its
+    slice positions are, whatever SliceThickness or SpacingBetweenSlices say."""
+
+    def check(self, directory):
+        series = dicom_io.read_series(directory)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            dicom_io.check_slice_stack(series, directory)
+        return series, output.getvalue()
+
+    def physical_mismatches(self, slices, series, orientation, tmp):
+        """Source pixels not found at their physical position in the NIfTI."""
+        nifti = Path(tmp) / "nifti" / "VS_0000.nii.gz"
+        dicom_io.series_to_nifti(series, nifti)
+        image = sitk.ReadImage(str(nifti))
+        voxels = sitk.GetArrayFromImage(image)
+        row, column = np.asarray(orientation[:3], float), np.asarray(orientation[3:], float)
+        bad = 0
+        for position, pixels, _ in slices:
+            for r, c in np.ndindex(pixels.shape):
+                point = position + c * row + r * column     # PixelSpacing (1, 1)
+                index = image.TransformPhysicalPointToIndex(tuple(float(v) for v in point))
+                inside = all(0 <= i < n for i, n in zip(index, image.GetSize()))
+                bad += not (inside and voxels[index[::-1]] == pixels[r, c])
+        return bad, image.GetSpacing()[2]
+
+    def test_slice_spacing_comes_from_the_positions(self):
+        # No SpacingBetweenSlices: imagedata takes SliceThickness as the spacing.
+        for orientation, step, thickness in ((AXIAL, 0.5, 1.0), (SAGITTAL, -3.3, 3.0)):
+            with self.subTest(step=step, thickness=thickness), \
+                    tempfile.TemporaryDirectory() as tmp:
+                slices = write_stack(Path(tmp) / "in", 9, step=step, orientation=orientation,
+                                     SliceThickness=thickness)
+                series, printed = self.check(Path(tmp) / "in")
+                self.assertAlmostEqual(float(series.spacing[0]), abs(step), places=6)
+                self.assertEqual(len(printed.strip().splitlines()), 1)
+                self.assertIn(f"{thickness:g}", printed)
+                self.assertIn(f"{abs(step):g}", printed)
+                bad, spacing = self.physical_mismatches(slices, series, orientation, tmp)
+                self.assertEqual(bad, 0)
+                self.assertAlmostEqual(spacing, abs(step), places=5)
+
+    def test_wrong_spacing_between_slices_is_corrected(self):
+        for spacing_between_slices in (2.0, -1.0):
+            with self.subTest(spacing_between_slices=spacing_between_slices), \
+                    tempfile.TemporaryDirectory() as tmp:
+                slices = write_stack(Path(tmp) / "in", 6, step=1.0, SliceThickness=1.0,
+                                     SpacingBetweenSlices=spacing_between_slices)
+                series, printed = self.check(Path(tmp) / "in")
+                self.assertIn(f"{spacing_between_slices:g}", printed)
+                bad, spacing = self.physical_mismatches(slices, series, AXIAL, tmp)
+                self.assertEqual(bad, 0)
+                self.assertAlmostEqual(spacing, 1.0, places=5)
+
+    def test_regular_stack_is_left_exactly_as_read(self):
+        # Like a Siemens series: thickness and position step differ by 1e-8.
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 7, step=1.1000000347, orientation=SAGITTAL,
+                        SliceThickness="1.1000000238")
+            series = dicom_io.read_series(Path(tmp) / "in")
+            before = np.array(series.spacing)
+            matrix = series.transformationMatrix    # setting the spacing would discard it
+            output = io.StringIO()
+            with redirect_stdout(output):
+                dicom_io.check_slice_stack(series, Path(tmp) / "in")
+            self.assertEqual(np.array(series.spacing).tobytes(), before.tobytes())
+            self.assertIs(series.header.transformationMatrix, matrix)
+            self.assertEqual(output.getvalue(), "")
+
+    def test_single_slice_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 1, SliceThickness=3.0)
+            series = dicom_io.read_series(Path(tmp) / "in")
+            before = np.array(series.spacing)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                dicom_io.check_slice_stack(series, Path(tmp) / "in")
+            self.assertEqual(np.array(series.spacing).tobytes(), before.tobytes())
+            self.assertEqual(output.getvalue(), "")
+
+    def test_missing_second_slice_is_refused(self):
+        # imagedata accepts this stack: only a gap larger than the first one fails there.
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 10, skip=(1,), SliceThickness=1.0)
+            series = dicom_io.read_series(Path(tmp) / "in")
+            self.assertEqual(series.slices, 9)
+            with self.assertRaisesRegex(ValueError, r"not evenly spaced.* 1(\.0+)? .* 2(\.0+)? mm"):
+                dicom_io.check_slice_stack(series, Path(tmp) / "in")
+
+    def test_undecodable_last_slice_is_refused(self):
+        # imagedata skips a file whose pixels it cannot decode.
+        with tempfile.TemporaryDirectory() as tmp:
+            slices = write_stack(Path(tmp) / "in", 10, SliceThickness=1.0)
+            last = pydicom.dcmread(str(slices[-1][2]))
+            last.PixelData = last.PixelData[:len(last.PixelData) // 2]
+            last.save_as(str(slices[-1][2]))
+            series = dicom_io.read_series(Path(tmp) / "in")
+            self.assertEqual(series.slices, 9)
+            with self.assertRaisesRegex(ValueError, r"\b10\b.*\b9\b"):
+                dicom_io.check_slice_stack(series, Path(tmp) / "in")
 
 
 @requires_dicom_fixture

@@ -1,8 +1,37 @@
 """Unit tests for the pipeline CLI helpers (no model run here)."""
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from nnunet_inference import pipeline
+
+
+class TestSliceStackCheck(unittest.TestCase):
+    def test_the_stack_is_checked_before_nnunet_sees_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "input").mkdir()
+            model = root / "model"
+            model.mkdir()
+            (model / "MODEL_VERSION.txt").write_text("a" * 64)
+            (model / "MODEL_NAME.txt").write_text("Synthetic")
+            series = object()
+            predictor = SimpleNamespace(allowed_mirroring_axes=None)
+            with patch.object(pipeline, "resolve_folds", return_value=(0,)), \
+                    patch.object(pipeline, "build_predictor", return_value=predictor), \
+                    patch.object(pipeline.dicom_io, "read_series", return_value=series) as read, \
+                    patch.object(pipeline.dicom_io, "check_slice_stack",
+                                 side_effect=ValueError("not evenly spaced")) as check, \
+                    patch.object(pipeline.dicom_io, "series_to_nifti") as to_nifti, \
+                    patch("builtins.print"):
+                with self.assertRaisesRegex(ValueError, "not evenly spaced"):
+                    pipeline.run_inference(root / "input", root / "output", model_dir=model,
+                                           device="cpu", disable_tta=True)
+            read.assert_called_once_with(root / "input")
+            check.assert_called_once_with(series, root / "input")
+            to_nifti.assert_not_called()
 
 
 class TestParseArgs(unittest.TestCase):

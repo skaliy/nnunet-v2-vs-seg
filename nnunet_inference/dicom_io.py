@@ -17,6 +17,7 @@ import numpy as np
 import SimpleITK as sitk
 from imagedata.series import Series
 from pydicom import dcmread
+from pydicom.misc import is_dicom
 from pydicom.uid import UID
 
 SLICE_TOLERANCE = 1e-2
@@ -52,6 +53,43 @@ VOTE_MAP_BLUE = 32768
 def read_series(input_dir):
     """Read a single DICOM series as an imagedata Series (z, y, x)."""
     return Series(str(input_dir), opts={"slice_tolerance": SLICE_TOLERANCE})
+
+
+def check_slice_stack(series, input_dir):
+    """Refuse an incomplete or unevenly spaced stack; take the spacing from the positions.
+
+    imagedata silently skips a file whose pixels it cannot decode, accepts a
+    stack whose first gap is larger than the others, and takes the slice
+    spacing from SpacingBetweenSlices or SliceThickness instead of the slice
+    positions. The image slices are counted from their headers (DICOM files
+    with ImagePositionPatient and Rows). A regular stack whose spacing already
+    matches its positions is not touched.
+    """
+    headers = []
+    for path in Path(input_dir).rglob("*"):
+        if path.is_file() and is_dicom(path):
+            dataset = dcmread(str(path), stop_before_pixels=True)
+            if hasattr(dataset, "ImagePositionPatient") and hasattr(dataset, "Rows"):
+                headers.append(dataset)
+    if series.slices != len(headers):
+        raise ValueError(f"The input folder holds {len(headers)} image slices, "
+                         f"but imagedata read {series.slices}")
+    if len(headers) < 2:
+        return
+    orientation = np.asarray(headers[0].ImageOrientationPatient, dtype=float)
+    normal = np.cross(orientation[:3], orientation[3:])
+    positions = np.sort([np.dot(np.asarray(d.ImagePositionPatient, dtype=float), normal)
+                         for d in headers])
+    gaps = np.diff(positions)
+    gap = float(np.median(gaps))
+    if np.abs(gaps - gap).max() > SLICE_TOLERANCE:
+        raise ValueError(f"The input slices are not evenly spaced: gaps from "
+                         f"{gaps.min():.6g} to {gaps.max():.6g} mm")
+    spacing = np.asarray(series.spacing, dtype=float)
+    if abs(gap - spacing[0]) > SLICE_TOLERANCE:
+        print(f"  slice spacing {spacing[0]:.6g} mm from the header does not match "
+              f"the slice positions; using their spacing, {gap:.6g} mm")
+        series.spacing = (gap, spacing[1], spacing[2])
 
 
 def get_orientation(nifti_path):

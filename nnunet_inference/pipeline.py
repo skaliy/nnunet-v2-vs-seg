@@ -134,6 +134,7 @@ def run_inference(input_dir, output_dir=None, *, model_dir, device="auto",
             int(axis) for axis in predictor.allowed_mirroring_axes
         ]
     series = dicom_io.read_series(input_dir)
+    dicom_io.check_slice_stack(series, input_dir)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
