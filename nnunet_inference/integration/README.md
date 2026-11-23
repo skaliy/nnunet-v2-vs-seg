@@ -67,9 +67,17 @@ REDCap imports, and keep them unique across both projects.
 ## CPU and memory contract
 
 Five folds execute concurrently in five CPU worker processes, each with three
-disjoint logical CPUs and three BLAS/OpenMP/PyTorch/ITK threads. The coordinator
-caps affinity to 16 available logical CPUs; at least 15 are required. The
-preprocessed volume and fold results use disk-backed NumPy buffers rather than
+BLAS/OpenMP/PyTorch/ITK threads; at least 15 logical CPUs are required. Which
+CPUs the threads run on depends on the launcher:
+
+- With `--cpuset-cpus` naming 16 logical CPUs or fewer, each worker is tied to
+  three CPUs of its own within that set.
+- Without it, the container sees every CPU of the host and ties its threads to
+  none. Linux runs them on CPUs that are free, so several containers can run at
+  once on a host with enough CPUs and memory, each within its `--cpus 16` and
+  64 GiB limits.
+
+The preprocessed volume and fold results use disk-backed NumPy buffers rather than
 multiprocessing queues, avoiding Docker's default 64 MiB shared-memory limit.
 
 Each worker keeps one copy of its weights. A lock shared by the workers lets one
@@ -87,8 +95,8 @@ docker run --rm --cpus 16 --memory 64g --memory-swap 64g \
   -v /absolute/path/empty-output:/output nnunet-vsseg:<VERSION>
 ```
 
-For fixed host CPU selection, also pass `--cpuset-cpus` with 16 allowed logical
-CPU IDs. The PACS administrator must set equivalent limits on its container
+To choose the host CPUs yourself, also pass `--cpuset-cpus` with 16 logical
+CPU IDs, a different set for each container that runs at the same time. The PACS administrator must set equivalent limits on its container
 launcher; memory limits cannot be encoded in a Dockerfile.
 
 ## Runtime options and outputs
@@ -165,7 +173,7 @@ IMAGE_TAG=nnunet-vsseg:<VERSION> TTA=false \
 # Repeat with TTA=true and a fresh output directory to qualify full-case TTA.
 ```
 
-`smoke-test.sh` fixes CPU affinity to 16 logical threads, applies a 64 GiB
+`smoke-test.sh` assigns 16 logical CPUs (`CPUSET`, by default the first 16), applies a 64 GiB
 memory/swap cap and validates all DICOM outputs, physical geometry, source IDs and the
 REDCap rows: instances base + 1, base + 2, ..., the dictionary fields, one
 `model_version`, and region sizes that add up to the published mask.
@@ -188,8 +196,7 @@ docker run --rm --network none --cpus 16 --memory 64g --memory-swap 64g \
   'python /validation/patch_regression.py --output /validation/output/patch_results.json'
 ```
 
-The helper caps affinity to 16 logical CPUs and compares all five folds by
-default. Add `--folds 0,1` for a smaller diagnostic regression or `--tta false`
+The helper compares all five folds by default. Add `--folds 0,1` for a smaller diagnostic regression or `--tta false`
 to run only the non-TTA condition. Completed production qualification should
 record the full five-fold results.
 

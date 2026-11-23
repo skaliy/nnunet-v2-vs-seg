@@ -18,6 +18,17 @@ def contract():
                 memory_limit_gib=MEMORY_LIMIT_GIB)
 
 
+def cpus_are_assigned(available):
+    """Whether the launcher gave this container its own CPUs (a cpuset).
+
+    With MAX_THREADS CPUs or fewer, each worker is tied to three of them.
+    With more, none were assigned: the threads are left to the kernel, which
+    runs them on CPUs that are free. Tying them to the lowest ones would put
+    every container of a host on the same CPUs.
+    """
+    return len(available) <= MAX_THREADS
+
+
 def set_thread_environment():
     """Limit the numeric libraries in this process and in the ones it starts."""
     for name in THREAD_VARIABLES:

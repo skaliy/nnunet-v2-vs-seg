@@ -1,4 +1,4 @@
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -251,6 +251,35 @@ class PacsTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("jq"), "entrypoint.sh validates ROR_CONT_OPTIONS with jq, "
                                          "which is not installed on this machine")
+class ConfigureCpuTests(unittest.TestCase):
+    def configure(self, available):
+        printed = io.StringIO()
+        with patch("os.sched_getaffinity", return_value=set(available)), \
+                patch("os.sched_setaffinity") as pin, patch.dict(os.environ), \
+                patch("torch.set_num_threads") as threads, \
+                patch("torch.set_num_interop_threads"), \
+                patch("SimpleITK.ProcessObject.SetGlobalDefaultNumberOfThreads"), \
+                redirect_stdout(printed):
+            pacs.configure_cpu()
+            self.assertEqual(os.environ["OMP_NUM_THREADS"], "3")
+        threads.assert_called_once_with(3)
+        return pin, printed.getvalue()
+
+    def test_a_host_without_assigned_cpus_is_not_narrowed_to_its_lowest_cpus(self):
+        pin, printed = self.configure(range(64))
+        pin.assert_not_called()
+        self.assertEqual(printed, "64 CPUs available, threads not pinned; 5 workers x 3 threads\n")
+
+    def test_assigned_cpus_are_kept_and_printed(self):
+        pin, printed = self.configure(range(16, 32))
+        pin.assert_not_called()
+        self.assertEqual(printed, f"CPU affinity: {list(range(16, 32))}; 5 workers x 3 threads\n")
+
+    def test_fewer_than_fifteen_cpus_are_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "at least 15 available CPU threads; got 14"):
+            self.configure(range(14))
+
+
 class EntrypointTests(unittest.TestCase):
     def test_boolean_options_default_and_rejections(self):
         entrypoint = Path(__file__).resolve().parents[1] / "integration/entrypoint.sh"

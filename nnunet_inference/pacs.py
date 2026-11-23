@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 
-from .cpu import MAX_THREADS, THREADS_PER_FOLD, set_thread_environment
+from .cpu import THREADS_PER_FOLD, cpus_are_assigned, set_thread_environment
 from .deployment import MODELS, validate_deployment
 from .dicom_io import tag_pr2mask_mask
 from .pipeline import run_inference
@@ -26,17 +26,18 @@ TITLE_LABELS = {"nnunet_large": "nnunet_l"}
 
 def configure_cpu():
     required = len(FIVE_FOLDS) * THREADS_PER_FOLD
-    cpus = sorted(os.sched_getaffinity(0))[:MAX_THREADS]
+    cpus = sorted(os.sched_getaffinity(0))
     if len(cpus) < required:
         raise RuntimeError(f"Five-fold inference requires at least {required} available CPU threads; got {len(cpus)}")
-    os.sched_setaffinity(0, cpus)
     set_thread_environment()
     import torch
     import SimpleITK as sitk
     torch.set_num_threads(THREADS_PER_FOLD)
     torch.set_num_interop_threads(1)
     sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(THREADS_PER_FOLD)
-    print(f"CPU affinity: {cpus}; {len(FIVE_FOLDS)} workers x {THREADS_PER_FOLD} threads", flush=True)
+    placement = (f"CPU affinity: {cpus}" if cpus_are_assigned(cpus)
+                 else f"{len(cpus)} CPUs available, threads not pinned")
+    print(f"{placement}; {len(FIVE_FOLDS)} workers x {THREADS_PER_FOLD} threads", flush=True)
 
 
 def prepare_output(output_dir):

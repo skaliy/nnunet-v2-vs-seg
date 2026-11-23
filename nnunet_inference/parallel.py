@@ -9,16 +9,19 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .cpu import MAX_THREADS, THREADS_PER_FOLD, set_thread_environment
+from .cpu import THREADS_PER_FOLD, cpus_are_assigned, set_thread_environment
 
 
 def assign_worker_cpus(count, available=None):
+    """Three CPUs of its own for each worker, or None for each when the
+    launcher assigned no CPUs (see cpu.cpus_are_assigned)."""
     available = sorted(os.sched_getaffinity(0) if available is None else available)
-    available = available[:MAX_THREADS]
     required = count * THREADS_PER_FOLD
     if len(available) < required:
         raise RuntimeError(f"{count} folds require {required} available CPU threads; "
                            f"affinity exposes {len(available)}")
+    if not cpus_are_assigned(available):
+        return [None] * count
     return [available[i * THREADS_PER_FOLD:(i + 1) * THREADS_PER_FOLD]
             for i in range(count)]
 
@@ -49,7 +52,8 @@ def limit_worker_memory(predictor, decoder_lock):
 def _fold_worker(model_dir, checkpoint_name, fold, use_tta, cpus, input_path,
                  output_path, error_path, decoder_lock):
     try:
-        os.sched_setaffinity(0, cpus)
+        if cpus is not None:
+            os.sched_setaffinity(0, cpus)
         torch.set_num_threads(THREADS_PER_FOLD)
         torch.set_num_interop_threads(1)
         import SimpleITK as sitk
@@ -61,7 +65,7 @@ def _fold_worker(model_dir, checkpoint_name, fold, use_tta, cpus, input_path,
         predictor.allow_tqdm = False
         lock_wait = limit_worker_memory(predictor, decoder_lock)
         data = np.load(input_path, mmap_mode="c", allow_pickle=False)
-        print(f"fold_{fold}: CPUs {cpus}, {THREADS_PER_FOLD} threads, "
+        print(f"fold_{fold}: {f'CPUs {cpus}' if cpus else 'not pinned'}, {THREADS_PER_FOLD} threads, "
               f"TTA={'on' if use_tta else 'off'}, shape={tuple(data.shape)}", flush=True)
         started = time.monotonic()
         logits = predictor.predict_logits_from_preprocessed_data(torch.from_numpy(data))
