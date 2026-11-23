@@ -62,8 +62,10 @@ def check_slice_stack(series, input_dir):
     stack whose first gap is larger than the others, and takes the slice
     spacing from SpacingBetweenSlices or SliceThickness instead of the slice
     positions. The image slices are counted from their headers (DICOM files
-    with ImagePositionPatient and Rows). A regular stack whose spacing already
-    matches its positions is not touched.
+    with ImagePositionPatient and Rows). Every position must lie within
+    SLICE_TOLERANCE of the evenly spaced line fitted through them all; positions
+    rounded to two decimals still do, although their gaps differ by 0.01 mm. A
+    regular stack whose spacing already matches its positions is not touched.
     """
     headers = []
     for path in Path(input_dir).rglob("*"):
@@ -81,15 +83,17 @@ def check_slice_stack(series, input_dir):
     positions = np.sort([np.dot(np.asarray(d.ImagePositionPatient, dtype=float), normal)
                          for d in headers])
     gaps = np.diff(positions)
-    gap = float(np.median(gaps))
-    if np.abs(gaps - gap).max() > SLICE_TOLERANCE:
+    index = np.arange(len(positions))
+    step, first = np.polyfit(index, positions, 1)
+    if np.abs(positions - (first + index * step)).max() > SLICE_TOLERANCE:
         raise ValueError(f"The input slices are not evenly spaced: gaps from "
                          f"{gaps.min():.6g} to {gaps.max():.6g} mm")
+    step = float(step)
     spacing = np.asarray(series.spacing, dtype=float)
-    if abs(gap - spacing[0]) > SLICE_TOLERANCE:
+    if abs(step - spacing[0]) > SLICE_TOLERANCE:
         print(f"  slice spacing {spacing[0]:.6g} mm from the header does not match "
-              f"the slice positions; using their spacing, {gap:.6g} mm")
-        series.spacing = (gap, spacing[1], spacing[2])
+              f"the slice positions; using their spacing, {step:.6g} mm")
+        series.spacing = (step, spacing[1], spacing[2])
 
 
 def get_orientation(nifti_path):

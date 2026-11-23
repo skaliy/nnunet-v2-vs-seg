@@ -332,20 +332,41 @@ AXIAL = (1, 0, 0, 0, 1, 0)
 SAGITTAL = (0, 1, 0, 0, 0, -1)
 
 
-def write_stack(directory, count, *, step=1.0, orientation=AXIAL, skip=(), **tags):
+def oblique(row_degrees, column_degrees):
+    """Unit row and column vectors tilted about z and then about the row, as written."""
+    a, b = np.radians(row_degrees), np.radians(column_degrees)
+    vectors = (np.cos(a), np.sin(a), 0.0,
+               -np.sin(a) * np.cos(b), np.cos(a) * np.cos(b), np.sin(b))
+    return tuple(f"{v:.10f}" for v in vectors)
+
+
+def write_stack(directory, count, *, step=1.0, orientation=AXIAL, skip=(), positions=None,
+                reverse_files=False, **tags):
     """Write `count` slices `step` mm apart along the slice normal, leaving out
-    the indices in `skip`; return (position, pixels, path) for each written slice."""
+    the indices in `skip`; return (position, pixels, path) for each written slice.
+
+    `positions` (axial only) gives the z positions as written, as strings,
+    instead of multiples of `step`. With `reverse_files`, the file names and the
+    order of writing run against the slice normal."""
     row, column = np.asarray(orientation[:3], float), np.asarray(orientation[3:], float)
     normal = np.cross(row, column)
     rng = np.random.default_rng(count)
+    pixel_values = [rng.integers(0, 1000, (4, 5)) for _ in range(count)]
     slices = []
-    for index in range(count):
-        pixels = rng.integers(0, 1000, (4, 5))
+    for index in (range(count - 1, -1, -1) if reverse_files else range(count)):
+        pixels = pixel_values[index]
         if index in skip:
             continue
-        position = np.array([3.0, -4.0, 5.0]) + index * step * normal
-        path = write_image(Path(directory) / f"{index:03d}.dcm", index, orientation=orientation,
-                           position=[f"{v:.12g}" for v in position], pixels=pixels, **tags)
+        if positions is None:
+            position = np.array([3.0, -4.0, 5.0]) + index * step * normal
+            written = [f"{v:.12g}" for v in position]
+        else:
+            assert orientation == AXIAL, "written positions are axial"
+            position = np.array([3.0, -4.0, float(positions[index])])
+            written = ["3", "-4", positions[index]]
+        name = count - 1 - index if reverse_files else index
+        path = write_image(Path(directory) / f"{name:03d}.dcm", index, orientation=orientation,
+                           position=written, pixels=pixels, **tags)
         slices.append((position, pixels, path))
     return slices
 
@@ -405,20 +426,63 @@ class TestSliceStack(unittest.TestCase):
                 self.assertEqual(bad, 0)
                 self.assertAlmostEqual(spacing, 1.0, places=5)
 
+    def assert_left_exactly_as_read(self, directory):
+        series = dicom_io.read_series(directory)
+        before = np.array(series.spacing)
+        matrix = series.transformationMatrix    # setting the spacing would discard it
+        output = io.StringIO()
+        with redirect_stdout(output):
+            dicom_io.check_slice_stack(series, directory)
+        self.assertEqual(np.array(series.spacing).tobytes(), before.tobytes())
+        self.assertIs(series.header.transformationMatrix, matrix)
+        self.assertEqual(output.getvalue(), "")
+
     def test_regular_stack_is_left_exactly_as_read(self):
         # Like a Siemens series: thickness and position step differ by 1e-8.
         with tempfile.TemporaryDirectory() as tmp:
             write_stack(Path(tmp) / "in", 7, step=1.1000000347, orientation=SAGITTAL,
                         SliceThickness="1.1000000238")
+            self.assert_left_exactly_as_read(Path(tmp) / "in")
+
+    def test_stack_in_reversed_file_order_is_left_exactly_as_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 9, step=1.2, reverse_files=True, SliceThickness=1.2)
+            self.assert_left_exactly_as_read(Path(tmp) / "in")
+
+    def test_oblique_stack_is_left_exactly_as_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 9, step=0.8, orientation=oblique(13.7, 5.3),
+                        SliceThickness=0.8)
+            self.assert_left_exactly_as_read(Path(tmp) / "in")
+
+    def test_positions_rounded_to_two_decimals_are_accepted(self):
+        # A 2/3 mm step written with two decimals: 0, 0.67, 1.33, 2.0, ... The gaps
+        # are 0.66 or 0.67 mm, but no position is more than 0.005 mm from its place.
+        positions = [f"{index * 2 / 3:.2f}" for index in range(30)]
+        self.assertEqual(positions[:4], ["0.00", "0.67", "1.33", "2.00"])
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 30, positions=positions, SliceThickness="0.666667")
+            self.assert_left_exactly_as_read(Path(tmp) / "in")
+
+    def test_rounded_positions_with_a_wrong_header_get_their_fitted_spacing(self):
+        # The median gap of these positions is 0.67 mm; over 30 slices that would
+        # put the last one 0.1 mm off. The fitted step is 2/3 mm.
+        positions = [f"{index * 2 / 3:.2f}" for index in range(30)]
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 30, positions=positions, SliceThickness=1.0)
+            series, printed = self.check(Path(tmp) / "in")
+            self.assertAlmostEqual(float(series.spacing[0]), 2 / 3, delta=1e-4)
+            self.assertEqual(len(printed.strip().splitlines()), 1)
+
+    def test_near_duplicate_last_position_is_refused(self):
+        # imagedata accepts this stack: the last gap is smaller than the first one.
+        positions = [f"{index}" for index in range(9)] + ["8.005"]
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 10, positions=positions, SliceThickness=1.0)
             series = dicom_io.read_series(Path(tmp) / "in")
-            before = np.array(series.spacing)
-            matrix = series.transformationMatrix    # setting the spacing would discard it
-            output = io.StringIO()
-            with redirect_stdout(output):
+            self.assertEqual(series.slices, 10)
+            with self.assertRaisesRegex(ValueError, r"not evenly spaced.* 0\.005 .* 1(\.0+)? mm"):
                 dicom_io.check_slice_stack(series, Path(tmp) / "in")
-            self.assertEqual(np.array(series.spacing).tobytes(), before.tobytes())
-            self.assertIs(series.header.transformationMatrix, matrix)
-            self.assertEqual(output.getvalue(), "")
 
     def test_single_slice_is_left_alone(self):
         with tempfile.TemporaryDirectory() as tmp:
