@@ -2,6 +2,8 @@
 from contextlib import contextmanager, nullcontext, redirect_stdout
 import io
 import os
+import re
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -382,6 +384,14 @@ class TestSliceStack(unittest.TestCase):
             dicom_io.check_slice_stack(series, directory)
         return series, output.getvalue()
 
+    def assert_printed_spacings(self, printed, header, positions, delta=1e-5):
+        """`printed` is the one line naming the header's and the positions' spacing."""
+        match = re.fullmatch(r"  slice spacing (\S+) mm from the header does not match the "
+                             r"slice positions; using their spacing, (\S+) mm\n", printed)
+        self.assertIsNotNone(match, printed)
+        self.assertEqual(float(match[1]), header)
+        self.assertAlmostEqual(float(match[2]), positions, delta=delta)
+
     def physical_mismatches(self, slices, series, orientation, tmp):
         """Source pixels not found at their physical position in the NIfTI."""
         nifti = Path(tmp) / "nifti" / "VS_0000.nii.gz"
@@ -407,9 +417,7 @@ class TestSliceStack(unittest.TestCase):
                                      SliceThickness=thickness)
                 series, printed = self.check(Path(tmp) / "in")
                 self.assertAlmostEqual(float(series.spacing[0]), abs(step), places=6)
-                self.assertEqual(len(printed.strip().splitlines()), 1)
-                self.assertIn(f"{thickness:g}", printed)
-                self.assertIn(f"{abs(step):g}", printed)
+                self.assert_printed_spacings(printed, thickness, abs(step))
                 bad, spacing = self.physical_mismatches(slices, series, orientation, tmp)
                 self.assertEqual(bad, 0)
                 self.assertAlmostEqual(spacing, abs(step), places=5)
@@ -419,7 +427,7 @@ class TestSliceStack(unittest.TestCase):
             slices = write_stack(Path(tmp) / "in", 6, step=1.0, SliceThickness=1.0,
                                  SpacingBetweenSlices=2.0)
             series, printed = self.check(Path(tmp) / "in")
-            self.assertIn("2", printed)
+            self.assert_printed_spacings(printed, 2.0, 1.0)
             bad, spacing = self.physical_mismatches(slices, series, AXIAL, tmp)
             self.assertEqual(bad, 0)
             self.assertAlmostEqual(spacing, 1.0, places=5)
@@ -483,7 +491,30 @@ class TestSliceStack(unittest.TestCase):
             write_stack(Path(tmp) / "in", 30, positions=positions, SliceThickness=1.0)
             series, printed = self.check(Path(tmp) / "in")
             self.assertAlmostEqual(float(series.spacing[0]), 2 / 3, delta=1e-4)
-            self.assertEqual(len(printed.strip().splitlines()), 1)
+            self.assert_printed_spacings(printed, 1.0, 2 / 3, delta=1e-4)
+
+    def test_other_folder_contents_do_not_change_the_slice_count(self):
+        # A DICOMDIR-like object without pixels, a text file, and a sub-folder
+        # holding some of the slices: imagedata reads the six slices, and so
+        # does the header count.
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "in"
+            slices = write_stack(directory, 6, step=1.2, SliceThickness=1.2)
+            (directory / "sub").mkdir()
+            for _, _, path in slices[::2]:
+                shutil.move(str(path), str(directory / "sub" / path.name))
+            (directory / "notes.txt").write_text("not DICOM")
+            (directory / "sub" / "notes.txt").write_text("not DICOM")
+            meta = pydicom.dataset.FileMetaDataset()
+            meta.MediaStorageSOPClassUID = "1.2.840.10008.1.3.10"   # Media Storage Directory
+            meta.MediaStorageSOPInstanceUID = "1.2.3.99"
+            meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+            dicomdir = pydicom.dataset.FileDataset(str(directory / "DICOMDIR"), {},
+                                                   file_meta=meta, preamble=b"\0" * 128)
+            dicomdir.FileSetID = "SYNTHETIC"
+            dicomdir.save_as(directory / "DICOMDIR", enforce_file_format=True)
+            self.assertEqual(dicom_io.read_series(directory).slices, 6)
+            self.assert_left_exactly_as_read(directory)
 
     def test_near_duplicate_last_position_is_refused(self):
         # imagedata accepts this stack: the last gap is smaller than the first one.
