@@ -53,6 +53,39 @@ If it reports differences, first compare the Python packages of the two images
 (`docker run --rm --entrypoint /bin/bash IMAGE -lc 'pip freeze'`): a rebuilt environment
 layer can differ without any change to this repository.
 
+### Shorter check: masks, UIDs and REDCap values only
+
+`release-regression.sh` runs the release four times on the day of the check, because the
+fused images and the report have the date drawn into them. When the masks are what
+matters, the candidate can instead be compared with release runs kept from earlier days;
+it then runs only twice, about two hours in all. A baseline made from two release runs
+of different days holds every entry that does not depend on the day: all mask pixels,
+the tags and UIDs of every series, and all REDCap values. The pixels of `fused`,
+`fused_vote_map` and `reports` are left out, and `stable` says so.
+
+```bash
+RUNS="${NNUNET_WORKSPACE:-../../nnUNet_data}/regression"
+for tta in true false; do
+    # Once per release: the baseline from release runs of two different days.
+    python compare_outputs.py stable \
+        "$RUNS/2026-11-16/reference-52ef0f316a90-tta-$tta-1.json" \
+        "$RUNS/2026-11-18/reference-52ef0f316a90-tta-$tta-1.json" \
+        "$RUNS/release-$RELEASE/baseline-across-days-tta-$tta.json"
+    # For each check: run the candidate under the release's name and compare.
+    out="$RUNS/$(date +%F)/candidate-tta-$tta"
+    IMAGE_TAG=nnunet-vsseg-check:$RELEASE TTA=$tta \
+    CONTAINER_VERSION_OVERRIDE=nnunet-vsseg:$RELEASE \
+        ./smoke-test.sh ../tests/dicom_input "$out"
+    python compare_outputs.py snapshot "$out" "$out.json"
+    python compare_outputs.py check \
+        "$RUNS/release-$RELEASE/baseline-across-days-tta-$tta.json" "$out.json"
+done
+```
+
+Each `check` must print `candidate matches the baseline`. Run the candidate on the same
+CPUs as the release runs (the default, the first sixteen): the CPU numbers are recorded
+in `runtime_resources.json` and compared.
+
 Then the fold regression, which must report `"bitwise_equal": true` twice:
 
 ```bash
