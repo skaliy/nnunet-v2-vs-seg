@@ -65,7 +65,8 @@ def check_slice_stack(series, input_dir):
     with ImagePositionPatient and Rows). Every position must lie within
     SLICE_TOLERANCE of the evenly spaced line fitted through them all; positions
     rounded to two decimals still do, although their gaps differ by 0.01 mm. A
-    regular stack whose spacing already matches its positions is not touched.
+    header slice spacing of zero or less is refused, not corrected. A regular
+    stack whose spacing already matches its positions is not touched.
     """
     headers = []
     for path in Path(input_dir).rglob("*"):
@@ -90,6 +91,10 @@ def check_slice_stack(series, input_dir):
                          f"{gaps.min():.6g} to {gaps.max():.6g} mm")
     step = float(step)
     spacing = np.asarray(series.spacing, dtype=float)
+    if spacing[0] <= 0:
+        # Such a stack failed at the NIfTI step before this check existed.
+        raise ValueError(f"The slice spacing in the header is not positive: "
+                         f"{spacing[0]:.6g} mm")
     if abs(step - spacing[0]) > SLICE_TOLERANCE:
         print(f"  slice spacing {spacing[0]:.6g} mm from the header does not match "
               f"the slice positions; using their spacing, {step:.6g} mm")

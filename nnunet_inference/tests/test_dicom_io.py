@@ -415,16 +415,27 @@ class TestSliceStack(unittest.TestCase):
                 self.assertAlmostEqual(spacing, abs(step), places=5)
 
     def test_wrong_spacing_between_slices_is_corrected(self):
-        for spacing_between_slices in (2.0, -1.0):
-            with self.subTest(spacing_between_slices=spacing_between_slices), \
-                    tempfile.TemporaryDirectory() as tmp:
-                slices = write_stack(Path(tmp) / "in", 6, step=1.0, SliceThickness=1.0,
-                                     SpacingBetweenSlices=spacing_between_slices)
-                series, printed = self.check(Path(tmp) / "in")
-                self.assertIn(f"{spacing_between_slices:g}", printed)
-                bad, spacing = self.physical_mismatches(slices, series, AXIAL, tmp)
-                self.assertEqual(bad, 0)
-                self.assertAlmostEqual(spacing, 1.0, places=5)
+        with tempfile.TemporaryDirectory() as tmp:
+            slices = write_stack(Path(tmp) / "in", 6, step=1.0, SliceThickness=1.0,
+                                 SpacingBetweenSlices=2.0)
+            series, printed = self.check(Path(tmp) / "in")
+            self.assertIn("2", printed)
+            bad, spacing = self.physical_mismatches(slices, series, AXIAL, tmp)
+            self.assertEqual(bad, 0)
+            self.assertAlmostEqual(spacing, 1.0, places=5)
+
+    def test_non_positive_header_spacing_is_refused(self):
+        # The release failed on these at the NIfTI step; they are not corrected.
+        for tags in (dict(SliceThickness=1.0, SpacingBetweenSlices=-1.0),
+                     dict(SliceThickness=1.0, SpacingBetweenSlices=0.0),
+                     dict(SliceThickness=-1.0), dict(SliceThickness=0.0)):
+            with self.subTest(**tags), tempfile.TemporaryDirectory() as tmp:
+                write_stack(Path(tmp) / "in", 6, step=1.0, **tags)
+                series = dicom_io.read_series(Path(tmp) / "in")
+                self.assertLessEqual(float(series.spacing[0]), 0)
+                with self.assertRaisesRegex(
+                        ValueError, r"slice spacing in the header is not positive: -?[01] mm"):
+                    dicom_io.check_slice_stack(series, Path(tmp) / "in")
 
     def assert_left_exactly_as_read(self, directory):
         series = dicom_io.read_series(directory)
