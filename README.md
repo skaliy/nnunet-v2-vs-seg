@@ -76,8 +76,7 @@ already has a folder in `nnUNet_raw`, `nnUNet_preprocessed` or `nnUNet_results`.
 
 ```bash
 for fold in 0 1 2 3 4; do
-    nnUNetv2_train "$DATASET_ID" 3d_fullres "$fold" \
-        -p nnUNetResEncUNetLPlans --npz
+    nnUNetv2_train "$DATASET_ID" 3d_fullres "$fold" -p nnUNetResEncUNetLPlans
 done
 
 python training/evaluate_cv.py --dataset "$DATASET"
