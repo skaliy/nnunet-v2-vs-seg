@@ -3,10 +3,13 @@ from contextlib import redirect_stdout
 import csv
 import io
 import json
+import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import SimpleITK as sitk
@@ -107,6 +110,59 @@ class PrepareDatasetTests(unittest.TestCase):
         sitk.WriteImage(rotated, str(mask))
         with self.assertRaisesRegex(ValueError, "case0: corner voxels are"):
             self.load()
+
+    def prepare(self, *arguments, environment=None):
+        """Run the script's main() with nnU-Net's variables set only as given."""
+        variables = {key: value for key, value in os.environ.items()
+                     if key not in ("nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results")}
+        with mock.patch.dict(os.environ, variables | (environment or {}), clear=True), \
+                redirect_stdout(io.StringIO()):
+            return prepare_dataset.main([
+                "--data-csv", str(self.index()), "--source-root", str(self.root),
+                "--dataset-id", "900", "--dataset-name", "Synthetic",
+                "--label-mode", "binary", "--workers", "1", *arguments])
+
+    def test_dataset_id_in_use_in_the_raw_folder_is_refused(self):
+        raw = self.root / "workspace" / "nnUNet_raw"
+        (raw / "Dataset900_Other").mkdir(parents=True)
+        with self.assertRaisesRegex(SystemExit, f"in use.*{re.escape(str(raw / 'Dataset900_Other'))}"):
+            self.prepare("--nnunet-raw", str(raw))
+        self.assertEqual([path.name for path in raw.iterdir()], ["Dataset900_Other"])
+
+    def test_dataset_id_in_use_only_in_the_results_next_to_raw_is_refused(self):
+        workspace = self.root / "workspace"
+        (workspace / "nnUNet_results" / "Dataset900_Synthetic").mkdir(parents=True)
+        for arguments, environment in (
+                (["--nnunet-raw", str(workspace / "nnUNet_raw")], None),
+                ([], dict(nnUNet_raw=str(workspace / "nnUNet_raw")))):
+            with self.subTest(arguments=arguments), self.assertRaisesRegex(
+                    SystemExit, "in use.*" + re.escape(
+                        str(workspace / "nnUNet_results" / "Dataset900_Synthetic"))):
+                self.prepare(*arguments, environment=environment)
+        self.assertFalse((workspace / "nnUNet_raw").exists())
+
+    def test_dataset_id_in_the_environment_workspace_is_refused_without_nnunet_raw(self):
+        workspace = self.root / "workspace"
+        (workspace / "nnUNet_preprocessed" / "Dataset900_Other").mkdir(parents=True)
+        environment = dict(nnUNet_raw=str(self.root / "scratch" / "raw"),
+                           nnUNet_preprocessed=str(workspace / "nnUNet_preprocessed"),
+                           nnUNet_results=str(workspace / "nnUNet_results"))
+        with self.assertRaisesRegex(SystemExit, "in use.*" + re.escape(
+                str(workspace / "nnUNet_preprocessed" / "Dataset900_Other"))):
+            self.prepare(environment=environment)
+        self.assertFalse((self.root / "scratch").exists())
+
+    def test_explicit_nnunet_raw_does_not_consult_the_environment_workspace(self):
+        """The VS check builds Dataset003 into a scratch folder while the variables
+        point at the real workspace."""
+        workspace = self.root / "workspace"
+        for folder in ("nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results"):
+            (workspace / folder / "Dataset900_Synthetic").mkdir(parents=True)
+        scratch = self.root / "scratch"
+        self.assertEqual(self.prepare("--nnunet-raw", str(scratch), environment={
+            folder: str(workspace / folder)
+            for folder in ("nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results")}), 0)
+        self.assertTrue((scratch / "Dataset900_Synthetic" / "dataset.json").is_file())
 
     def test_image_that_is_not_nii_gz_is_rejected(self):
         write_volume(self.root / "images" / "case0.nii", np.zeros(SHAPE, dtype=np.int16))

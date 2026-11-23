@@ -69,8 +69,8 @@ cp "$nnUNet_raw/$DATASET/splits_final.json" \
 ```
 
 `largest-component` removes disconnected label blobs; use `binary` to retain
-all foreground components. The preparation script refuses to overwrite an
-existing dataset.
+all foreground components. The preparation script refuses a dataset ID that
+already has a folder in `nnUNet_raw`, `nnUNet_preprocessed` or `nnUNet_results`.
 
 ## Train and evaluate five folds
 
