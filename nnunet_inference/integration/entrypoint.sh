@@ -7,10 +7,13 @@ set -euo pipefail
 model_type="$(jq -r .model_type "${NNUNET_MODEL_DIR:-/app/model}/deployment_manifest.json")"
 ror_options="${ROR_CONT_OPTIONS:-}"
 if [ -z "${ror_options}" ]; then ror_options='{}'; fi
-if ! jq -e --arg model_type "${model_type}" 'type == "object"
+# -s reads every JSON value into one array: exactly one value, an object, is
+# accepted (without it, jq -e would judge only the last of several values).
+if ! jq -e -s --arg model_type "${model_type}" 'length == 1 and (.[0]
+    | type == "object"
     and ((keys - ["model-type", "tta"]) | length == 0)
     and (if has("model-type") then .["model-type"] == $model_type else true end)
-    and (if has("tta") then (.tta | type == "boolean") else true end)' \
+    and (if has("tta") then (.tta | type == "boolean") else true end))' \
     >/dev/null <<< "${ror_options}"; then
     printf 'Error: invalid ROR_CONT_OPTIONS: %s\n' "${ror_options}" >&2
     printf 'Use {} or {"tta":true} (TTA on, the default) or {"tta":false}. Optional "model-type" must be "%s".\n' \
@@ -18,7 +21,7 @@ if ! jq -e --arg model_type "${model_type}" 'type == "object"
     exit 2
 fi
 tta_arg=--tta
-if [ "$(jq -r 'if has("tta") then .tta else true end' <<< "${ror_options}")" = false ]; then
+if [ "$(jq -s -r '.[0] | if has("tta") then .tta else true end' <<< "${ror_options}")" = false ]; then
     tta_arg=--no-tta
 fi
 

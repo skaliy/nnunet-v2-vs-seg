@@ -224,18 +224,25 @@ class PacsTests(unittest.TestCase):
                 pacs.run_pacs("/missing", "/missing", version=version, container=container)
 
 
+@unittest.skipUnless(shutil.which("jq"), "entrypoint.sh validates ROR_CONT_OPTIONS with jq, "
+                                         "which is not installed on this machine")
 class EntrypointTests(unittest.TestCase):
     def test_boolean_options_default_and_rejections(self):
         entrypoint = Path(__file__).resolve().parents[1] / "integration/entrypoint.sh"
         for options, expected in [("", "--tta"), ("{}", "--tta"), ('{"tta":true}', "--tta"),
                                   ('{"tta":false}', "--no-tta"),
+                                  ('{"model-type":"nnunet_large"}', "--tta"),
                                   ('{"model-type":"nnunet_large","tta":true}', "--tta"),
                                   ('""', None), ('{"tta":""}', None), ('{"--tta":""}', None),
                                   ('{"tta":"false"}', None), ('{"tta":null}', None),
                                   ('{"model-type":"large"}', None), ('{"model-type":"nnunet_medium"}', None),
-                                  ('{"other":1}', None),
-                                  ('{"tta":true};touch /tmp/invalid', None)]:
-            with tempfile.TemporaryDirectory() as tmp:
+                                  ('{"other":1}', None), (" ", None),
+                                  ('{"tta":true};touch /tmp/invalid', None),
+                                  # Exactly one JSON value: jq would judge only the last one.
+                                  ('{"tta":false}{"tta":false}', None), ('{"tta":false} {}', None),
+                                  ('{"tta":"no"} {}', None), ('{"model-type":"other"} {}', None),
+                                  ("[] {}", None), ("{} {}", None)]:
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 (root / "python").write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
                 (root / "python").chmod(0o755)
