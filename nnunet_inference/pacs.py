@@ -90,10 +90,11 @@ def publish(work_dir, output_dir, log_path):
 
 
 def model_version(deployment, container):
-    """REDCap model_version, e.g. 'nnunet_large 5-fold, nnunet-vsseg:20261111T090000Z'."""
-    count = len(deployment["members"])
-    members = f"{count}-fold" if count > 1 else "single model"
-    return f"{deployment['model_type']} {members}, {container}"
+    """REDCap model_version, e.g. 'nnunet_large 5-fold, nnunet-vsseg:20261111T090000Z'.
+
+    validate_deployment requires the five fold members.
+    """
+    return f"{deployment['model_type']} {len(deployment['members'])}-fold, {container}"
 
 
 def postprocess(input_dir, work_dir, output_dir, deployment, *, version, container,

@@ -241,8 +241,6 @@ class PacsTests(unittest.TestCase):
         self.assertEqual(pacs.model_version(dict(model_type="nnunet_large", members=members),
                                             "nnunet-vsseg:20261111T090000Z"),
                          "nnunet_large 5-fold, nnunet-vsseg:20261111T090000Z")
-        self.assertEqual(pacs.model_version(dict(model_type="nnunet_large", members=members[:1]), "x:1"),
-                         "nnunet_large single model, x:1")
 
     def test_run_requires_version_and_container(self):
         for version, container in [(None, "nnunet-vsseg:test"), ("test", None)]:
