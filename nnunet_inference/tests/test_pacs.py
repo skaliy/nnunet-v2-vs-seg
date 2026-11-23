@@ -1,6 +1,9 @@
+from contextlib import redirect_stderr
+import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -72,7 +75,8 @@ class PacsTests(unittest.TestCase):
                 output = root / "output"
                 output.mkdir()
                 with patch.object(pacs.subprocess, "run"), \
-                        patch.object(pacs, "tag_pr2mask_mask") as tag_mask:
+                        patch.object(pacs, "tag_pr2mask_mask") as tag_mask, \
+                        redirect_stderr(io.StringIO()):
                     with self.assertRaisesRegex(RuntimeError, "exactly one mask series"):
                         pacs.postprocess(source, work, output, deployment, version="test",
                                          container="nnunet-vsseg:test",
@@ -88,13 +92,76 @@ class PacsTests(unittest.TestCase):
             output.mkdir()
             deployment = dict(model_type="nnunet_large", model_name="Large", bundle_sha256="a" * 64,
                               members=[dict(member_id=f"fold_{n}") for n in range(5)])
-            with patch.object(pacs.subprocess, "run", side_effect=RuntimeError("tool failure")):
+            with patch.object(pacs.subprocess, "run", side_effect=RuntimeError("tool failure")), \
+                    redirect_stderr(io.StringIO()):
                 with self.assertRaisesRegex(RuntimeError, "tool failure"):
                     pacs.postprocess(source, work, output, deployment, version="test",
                                      container="nnunet-vsseg:test",
                                      use_tta=True, pr2mask_dir=Path("/pr2mask"))
             self.assertFalse(any(output.iterdir()))
 
+
+    def stand_in_tools(self, root, script):
+        """pr2mask stand-ins that run `script`."""
+        tools = root / "pr2mask"
+        tools.mkdir()
+        for name in ("imageAndMask2Report", "imageAndMask2Fused"):
+            (tools / name).write_text("#!/bin/sh\n" + script)
+            (tools / name).chmod(0o755)
+        return tools
+
+    def run_postprocess(self, root, tools, source, work):
+        output = root / "output"
+        output.mkdir()
+        deployment = dict(model_type="nnunet_large", model_name="Large",
+                          bundle_sha256=next(iter(json.loads(MODEL_INSTANCES_PATH.read_text()))),
+                          members=[dict(member_id=f"fold_{n}") for n in range(5)])
+        stderr = io.StringIO()
+        try:
+            with redirect_stderr(stderr):
+                pacs.postprocess(source, work, output, deployment, version="test",
+                                 container="nnunet-vsseg:test", use_tta=True, pr2mask_dir=tools)
+        finally:
+            self.stderr, self.output = stderr.getvalue(), output
+
+    def test_failing_pr2mask_tool_leaves_its_last_40_log_lines_on_stderr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, work, *_ = fixture(root)
+            tools = self.stand_in_tools(root, 'for i in $(seq 1 60); do echo "line $i"; done\n'
+                                              'echo "pr2mask: cannot read the mask series" >&2\n'
+                                              'exit 3\n')
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.run_postprocess(root, tools, source, work)
+            lines = self.stderr.splitlines()
+            self.assertIn("pr2mask: cannot read the mask series", lines)
+            self.assertIn("line 22", lines)
+            self.assertNotIn("line 21", lines)
+            self.assertFalse(any(self.output.iterdir()))
+
+    def test_missing_pr2mask_products_leave_its_log_on_stderr(self):
+        # pr2mask can print a message and exit 0 without writing its products.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, work, *_ = fixture(root)
+            shutil.rmtree(work / "labels" / "1.2.8")
+            tools = self.stand_in_tools(root, 'echo "readMaskImageSerie: no mask series"\n')
+            with self.assertRaisesRegex(RuntimeError, "exactly one mask series"):
+                self.run_postprocess(root, tools, source, work)
+            self.assertIn("readMaskImageSerie: no mask series", self.stderr)
+            self.assertFalse(any(self.output.iterdir()))
+
+    def test_successful_pr2mask_run_writes_nothing_to_stderr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, work, *_ = fixture(root)
+            for name in ("vote_map", "fused", "fused_vote_map", "reports"):
+                (work / name).mkdir()
+            tools = self.stand_in_tools(root, 'echo "pr2mask: done"\n')
+            with patch.object(pacs, "tag_pr2mask_mask"):
+                self.run_postprocess(root, tools, source, work)
+            self.assertEqual(self.stderr, "")
+            self.assertIn("pr2mask: done", (self.output / pacs.LOG_NAME).read_text())
 
     def test_products_appear_only_when_all_are_complete(self):
         with tempfile.TemporaryDirectory() as tmp:
