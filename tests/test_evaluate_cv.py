@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -123,6 +124,35 @@ class EvaluateTests(unittest.TestCase):
     def test_fold_outside_the_splits_is_an_error(self):
         with self.assertRaisesRegex(SystemExit, "has 2 folds"):
             self.evaluate("--folds", "0", "5")
+
+    def test_existing_results_are_replaced_only_with_overwrite(self):
+        self.assertEqual(self.evaluate(), 0)
+        output = self.model / "cv_metrics"
+        stored = {name: (output / name).read_bytes() for name in ("per_case.csv", "summary.csv")}
+        metrics = mock.Mock(side_effect=fake_metrics)
+        for name in ("per_case.csv", "summary.csv"):
+            with self.subTest(existing=name):
+                for other in stored:
+                    (output / other).unlink(missing_ok=True)
+                (output / name).write_bytes(stored[name])
+                with self.assertRaisesRegex(SystemExit, re.escape(str(output / name))
+                                            + ".*--output-dir.*--overwrite"):
+                    self.evaluate("--folds", "0", metrics=metrics)
+                metrics.assert_not_called()
+                self.assertEqual([path.name for path in output.iterdir()], [name])
+        self.assertEqual(self.evaluate("--folds", "0", "--overwrite"), 0)
+        self.assertEqual(pd.read_csv(output / "per_case.csv").case_id.tolist(), ["a", "b"])
+        other = self.root / "elsewhere"
+        self.assertEqual(self.evaluate("--output-dir", str(other)), 0)
+        self.assertEqual((other / "summary.csv").read_bytes(), stored["summary.csv"])
+
+    def test_repeated_fold_is_a_usage_error(self):
+        metrics = mock.Mock(side_effect=fake_metrics)
+        with self.assertRaises(SystemExit) as raised, redirect_stderr(io.StringIO()) as errors:
+            self.evaluate("--folds", "0", "1", "0", metrics=metrics)
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--folds", errors.getvalue())
+        metrics.assert_not_called()
 
     def test_fastmonai_root_option_is_gone(self):
         with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
