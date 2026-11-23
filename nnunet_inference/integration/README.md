@@ -40,7 +40,11 @@ cd nnunet_inference/integration
 Each invocation stages and verifies the bundle. Successful builds remove the
 reproducible `model/` and `_pkg/` staging copies; `--stage-only` retains them
 for inspection. Choose one build mode per release; `--save` builds, verifies
-and exports in one invocation. `VERSION`
+and exports in one invocation. `--build` and `--save` stop if the image
+`IMAGE_NAME:VERSION` already exists, so a released tag is never moved: remove an
+earlier candidate (`docker image rm`) before building it again under the same tag.
+`IMAGE_NAME:latest` moves to the new image only after it passes the verification run.
+`IMAGE_NAME` is a local repository name without a registry or path. `VERSION`
 defaults to a UTC timestamp. Set `NNUNET_PYTHON` to a staging interpreter when
 needed. `NNUNET_MODEL_SRC` may point to a copy of the same approved Dataset003
 model, whose dataset/plan/trainer/fold identities are checked.
@@ -211,7 +215,8 @@ disagree on the mask pixels, the script stops before the candidate runs; if they
 on the pixels of another output, those pixels are not compared, and the lines after the
 result say which and how many.
 
-Build the candidate with the release's `VERSION` under another `IMAGE_NAME`, on the
+Build the candidate with the release's `VERSION` under another `IMAGE_NAME` (remove an
+earlier candidate first; `build.sh` refuses an existing tag), on the
 release's Fiona base (`FIONA_BASE=haukebartsch/fiona-component-python@sha256:<digest>`).
 The script reads the release's `CONTAINER_VERSION` from its image configuration and gives
 it to the candidate for the run, so the image name is not a difference. Each run is
@@ -226,7 +231,9 @@ directory are reused for the same image ID, so a rebuilt candidate is run again.
 is drawn into the fused images, so use a new work directory each day.
 
 `--save` writes `release_packages/<VERSION>/` with the Docker archive, a short README
-(`release.py`: load, image ID, run, REDCap) and `ror_select_entry.txt`. Don't add a
+(`release.py`: load, image ID, run, REDCap) and `ror_select_entry.txt`. It fills
+`release_packages/.<VERSION>.partial/` and renames it only when all three are written, so
+a failed run leaves no package for its `VERSION`. Don't add a
 `.sha256`; the image ID after `docker load` is the check. Add what changed and what was
 tested to the README by hand. A built image is not automatically inference-qualified. Use a
 site-controlled selector for a single CE-T1 input series:

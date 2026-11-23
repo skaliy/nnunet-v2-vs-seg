@@ -21,13 +21,30 @@ esac
 if [[ ! "${VERSION}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
     echo 'Error: VERSION must be a valid Docker tag' >&2; exit 2
 fi
+# A local repository name: it is also the archive's file name, so no registry or path.
+if [[ ! "${IMAGE_NAME}" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+    echo 'Error: IMAGE_NAME must be lowercase letters and digits, separated by single' \
+        '".", "_" or "-" (no registry or path)' >&2; exit 2
+fi
 if [ "${mode}" = --save ] && [ -e "release_packages/${VERSION}" ]; then
     echo 'Error: release package already exists; select a new VERSION' >&2; exit 2
 fi
+# Building would move the tag of an existing image, which may be a release.
+if [ "${mode}" != --stage-only ] && docker image inspect "${DATED_TAG}" >/dev/null 2>&1; then
+    echo "Error: image ${DATED_TAG} already exists; remove it or choose another VERSION" >&2
+    exit 2
+fi
 
+# --save writes its package here and renames it to release_packages/<VERSION>
+# only when it is complete. A failed or killed run leaves no package.
+partial=
+if [ "${mode}" = --save ]; then
+    partial="${INTEGRATION_DIR}/release_packages/.${VERSION}.partial"
+    rm -rf -- "${partial}"
+fi
 # Stage only inference files. Preserve all original trained checkpoints and releases.
 stage_dir="$(mktemp -d "${INTEGRATION_DIR}/.bundle-stage-XXXXXX")"
-trap 'rm -rf "${stage_dir}"' EXIT
+trap 'rm -rf -- "${stage_dir}" ${partial:+"${partial}"}' EXIT
 PYTHONPATH="${PROJECT_ROOT}" "${PYTHON_BIN}" -m nnunet_inference.deployment \
     --source "${MODEL_SRC}" --output "${stage_dir}/model" --checkpoint "${CHECKPOINT}"
 PYTHONPATH="${PROJECT_ROOT}" "${PYTHON_BIN}" -c \
@@ -49,19 +66,22 @@ BASE_REF="$(docker image inspect "${BASE_IMAGE}" --format '{{index .RepoDigests 
 test -n "${BASE_REF}"
 docker build --pull --build-arg "VERSION=${VERSION}" --build-arg "IMAGE_NAME=${IMAGE_NAME}" \
     --build-arg "FIONA_BASE=${BASE_REF}" \
-    -f .ror/virt/Dockerfile -t "${DATED_TAG}" -t "${IMAGE_NAME}:latest" .
+    -f .ror/virt/Dockerfile -t "${DATED_TAG}" .
 docker run --rm --network none --entrypoint /bin/bash "${DATED_TAG}" -lc \
     'set -e
     python -m nnunet_inference.deployment --output /app/model --verify-only --verify-runtime --manifest-only
     python -m nnunet_inference.pacs --help >/dev/null'
+# latest, which smoke-test.sh runs by default, moves only to a verified image.
+docker tag "${DATED_TAG}" "${IMAGE_NAME}:latest"
 
 if [ "${mode}" = --save ]; then
     release_dir="${INTEGRATION_DIR}/release_packages/${VERSION}"
-    mkdir -p "${release_dir}"
+    mkdir -p "${partial}"
     archive_name="${IMAGE_NAME}-${VERSION}.tar.gz"
-    docker save "${DATED_TAG}" "${IMAGE_NAME}:latest" | gzip -1 > "${release_dir}/${archive_name}"
-    gzip -t "${release_dir}/${archive_name}"
-    "${PYTHON_BIN}" release.py "${release_dir}" "${DATED_TAG}" "${BASE_REF}"
+    docker save "${DATED_TAG}" "${IMAGE_NAME}:latest" | gzip -1 > "${partial}/${archive_name}"
+    gzip -t "${partial}/${archive_name}"
+    "${PYTHON_BIN}" release.py "${partial}" "${DATED_TAG}" "${BASE_REF}"
+    mv -T -- "${partial}" "${release_dir}"
     echo "Image and release archive verified: ${release_dir}"
     echo 'Use smoke-test.sh to qualify complete inference before PACS deployment.'
 fi

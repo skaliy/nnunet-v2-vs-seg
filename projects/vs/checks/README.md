@@ -39,6 +39,9 @@ FIONA_BASE=haukebartsch/fiona-component-python@sha256:9d36332e725d57c8d5907fba94
     ../tests/dicom_input "${NNUNET_WORKSPACE:-../../nnUNet_data}/regression/$(date +%F)"
 ```
 
+`build.sh` refuses to build when `nnunet-vsseg-check:$RELEASE` already exists, so remove
+the candidate of an earlier check first (the command at the end of this section).
+
 Relative paths are resolved from the current directory. The work directory must lie
 outside the repository or in a folder that Git ignores, as `nnUNet_data/` is, because its
 snapshots and REDCap files hold patient identifiers; the script refuses any other.
