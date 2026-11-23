@@ -154,6 +154,16 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn("--folds", errors.getvalue())
         metrics.assert_not_called()
 
+    def test_summary_reports_the_sample_standard_deviation(self):
+        frame = pd.DataFrame({"fold": [0, 0, 0, 1], "dsc": [0.5, 0.7, 0.9, 0.8]})
+        summary = evaluate_cv.summarize(frame, ["dsc"]).set_index("group")
+        # Divided by n - 1, as pandas, fastMONAI and "mean ± SD" in papers do.
+        self.assertAlmostEqual(summary.loc["fold_0", "std"], 0.2)
+        self.assertAlmostEqual(summary.loc["all", "std"], frame["dsc"].std())
+        # One case has no spread to estimate.
+        self.assertTrue(np.isnan(summary.loc["fold_1", "std"]))
+        self.assertAlmostEqual(summary.loc["fold_1", "mean"], 0.8)
+
     def test_fastmonai_root_option_is_gone(self):
         with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
             evaluate_cv._parser().parse_args(["--dataset", DATASET, "--fastmonai-root", "."])

@@ -139,7 +139,8 @@ def summarize(frame: pd.DataFrame, metric_names: list[str]) -> pd.DataFrame:
                     "group": group_name,
                     "metric": metric_name,
                     "mean": float(finite.mean()) if len(finite) else float("nan"),
-                    "std": float(finite.std()) if len(finite) else float("nan"),
+                    # The sample standard deviation (n - 1), as pandas and fastMONAI report it.
+                    "std": float(finite.std(ddof=1)) if len(finite) > 1 else float("nan"),
                     "finite_cases": int(len(finite)),
                     "total_cases": int(len(values)),
                 }

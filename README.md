@@ -84,9 +84,10 @@ python training/evaluate_cv.py --dataset "$DATASET"
 
 Evaluation writes per-case and summary CSV files to `cv_metrics/` in the
 trained model directory, and refuses to replace existing ones unless given
-`--overwrite`; use `--output-dir` for another folder. It uses the installed
-fastMONAI package and stops when a fold's predictions are not exactly its
-validation cases in `splits_final.json`.
+`--overwrite`; use `--output-dir` for another folder. The summary gives the
+mean and the sample standard deviation of each metric. Evaluation uses the
+installed fastMONAI package and stops when a fold's predictions are not exactly
+its validation cases in `splits_final.json`.
 
 `fold=all` trains one model on all cases; it is not cross-validation. Use
 `--c` to continue an interrupted fold.
