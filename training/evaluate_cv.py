@@ -149,10 +149,7 @@ def summarize(frame: pd.DataFrame, metric_names: list[str]) -> pd.DataFrame:
 
 
 def main(argv: list[str] | None = None, calculate_all_metrics=None) -> int:
-    parser = _parser()
-    args = parser.parse_args(argv)
-    if len(set(args.folds)) != len(args.folds):
-        parser.error(f"--folds lists a fold more than once: {args.folds}")
+    args = _parser().parse_args(argv)
     if calculate_all_metrics is None:
         from fastMONAI.vision_metrics import calculate_all_metrics
 

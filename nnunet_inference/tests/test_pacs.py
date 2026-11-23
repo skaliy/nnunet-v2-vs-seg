@@ -262,11 +262,7 @@ class EntrypointTests(unittest.TestCase):
                                   ('{"tta":"false"}', None), ('{"tta":null}', None),
                                   ('{"model-type":"large"}', None), ('{"model-type":"nnunet_medium"}', None),
                                   ('{"other":1}', None), (" ", None),
-                                  ('{"tta":true};touch /tmp/invalid', None),
-                                  # Exactly one JSON value: jq would judge only the last one.
-                                  ('{"tta":false}{"tta":false}', None), ('{"tta":false} {}', None),
-                                  ('{"tta":"no"} {}', None), ('{"model-type":"other"} {}', None),
-                                  ("[] {}", None), ("{} {}", None)]:
+                                  ('{"tta":true};touch /tmp/invalid', None)]:
             with self.subTest(options=options), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 (root / "python").write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')

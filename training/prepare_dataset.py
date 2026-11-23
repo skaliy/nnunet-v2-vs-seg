@@ -155,17 +155,6 @@ def grid_mismatch(image_path: Path, mask_path: Path) -> tuple[str | None, float]
     return None, shift
 
 
-def _fold(value: object, case_id: str) -> int:
-    """A fold is a whole number: 1 and 1.0 are fold 1; 1.5 is not a fold."""
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        number = float("nan")
-    if not number.is_integer():
-        raise ValueError(f"Invalid fold for {case_id}: {value!r}; folds are whole numbers")
-    return int(number)
-
-
 def load_cases(data_csv: Path, source_root: Path) -> list[Case]:
     """Load and fully validate the dataset index before any output is written."""
 
@@ -189,7 +178,10 @@ def load_cases(data_csv: Path, source_root: Path) -> list[Case]:
         case_id = str(row.case_id).strip()
         if not case_id or "/" in case_id or "\\" in case_id:
             raise ValueError(f"Invalid case_id: {case_id!r}")
-        fold = _fold(row.fold, case_id)
+        try:
+            fold = int(row.fold)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Invalid fold for {case_id}: {row.fold!r}") from error
 
         image_path = _resolve_source(str(row.t1_img_path), source_root)
         mask_path = _resolve_source(str(row.t1_seg_path), source_root)
@@ -280,8 +272,6 @@ def convert_mask(source: Path, destination: Path, label_mode: str) -> int:
 
 
 def _place_image(source: Path, destination: Path, copy_images: bool) -> str:
-    if destination.exists():
-        raise FileExistsError(f"Image already placed: {destination}")
     if copy_images:
         shutil.copy2(source, destination)
         return "copied"

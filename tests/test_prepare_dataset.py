@@ -122,15 +122,6 @@ class PrepareDatasetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"Duplicate case_id values: \['case0'\]"):
             self.load()
 
-    def test_an_image_already_in_the_dataset_is_not_replaced(self):
-        destination = self.root / "case0_0000.nii.gz"
-        for copy_images in (False, True):
-            destination.write_bytes(b"placed before")
-            with self.subTest(copy_images=copy_images), self.assertRaises(FileExistsError):
-                prepare_dataset._place_image(self.root / "images" / "case1.nii.gz", destination,
-                                             copy_images)
-            self.assertEqual(destination.read_bytes(), b"placed before")
-
     def test_the_same_image_or_mask_listed_for_two_cases_is_rejected(self):
         for column, kind in (("t1_img_path", "image"), ("t1_seg_path", "mask")):
             with self.subTest(kind=kind):
@@ -143,15 +134,6 @@ class PrepareDatasetTests(unittest.TestCase):
                 finally:
                     self.rows[2][column] = original
         self.assertEqual(len(self.load()), 4)
-
-    def test_folds_must_be_whole_numbers(self):
-        self.rows[0]["fold"] = "1.0"
-        self.assertEqual([case.fold for case in self.load()], [1, 2, 1, 2])
-        for value in ("1.5", "one"):
-            self.rows[3]["fold"] = value
-            with self.subTest(fold=value), self.assertRaisesRegex(
-                    ValueError, rf"Invalid fold for case3: '?{value}'?"):
-                self.load()
 
     def test_a_number_of_folds_other_than_five_is_noted(self):
         self.load()

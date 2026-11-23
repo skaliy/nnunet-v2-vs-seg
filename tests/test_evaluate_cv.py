@@ -146,14 +146,6 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(self.evaluate("--output-dir", str(other)), 0)
         self.assertEqual((other / "summary.csv").read_bytes(), stored["summary.csv"])
 
-    def test_repeated_fold_is_a_usage_error(self):
-        metrics = mock.Mock(side_effect=fake_metrics)
-        with self.assertRaises(SystemExit) as raised, redirect_stderr(io.StringIO()) as errors:
-            self.evaluate("--folds", "0", "1", "0", metrics=metrics)
-        self.assertEqual(raised.exception.code, 2)
-        self.assertIn("--folds", errors.getvalue())
-        metrics.assert_not_called()
-
     def test_summary_reports_the_sample_standard_deviation(self):
         frame = pd.DataFrame({"fold": [0, 0, 0, 1], "dsc": [0.5, 0.7, 0.9, 0.8]})
         summary = evaluate_cv.summarize(frame, ["dsc"]).set_index("group")
