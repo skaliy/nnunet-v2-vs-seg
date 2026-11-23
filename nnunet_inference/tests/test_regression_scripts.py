@@ -52,6 +52,77 @@ class SmokeTestScriptTests(unittest.TestCase):
         self.assertEqual(arguments[-1], "candidate:1")
 
 
+class SmokeTestPathTests(unittest.TestCase):
+    """smoke-test.sh copied into a stand-in repository and called from another
+    folder, with docker and python replaced by stand-ins."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.repository = self.root / "repo"
+        self.integration = self.repository / "nnunet_inference" / "integration"
+        self.integration.mkdir(parents=True)
+        shutil.copy2(INTEGRATION / "smoke-test.sh", self.integration / "smoke-test.sh")
+        (self.root / "bin").mkdir()
+        executable(self.root / "bin" / "docker", '#!/bin/bash\nprintf "%s\\n" "$@" > "$DOCKER_LOG"\n')
+        executable(self.root / "bin" / "python", "#!/bin/bash\nexit 0\n")
+        self.caller = self.root / "caller"
+        (self.caller / "input").mkdir(parents=True)
+        self.log = self.root / "docker.log"
+
+    def smoke_test(self, *arguments):
+        env = dict(environment_without("TTA", "IMAGE_TAG", "CONTAINER_VERSION_OVERRIDE"),
+                   PATH=f"{self.root / 'bin'}:{os.environ['PATH']}", DOCKER_LOG=str(self.log),
+                   NNUNET_PYTHON=str(self.root / "bin" / "python"), CPUSET="0-15")
+        return subprocess.run(["bash", str(self.integration / "smoke-test.sh"), *arguments],
+                              cwd=self.caller, env=env, capture_output=True, text=True)
+
+    def mounts(self):
+        arguments = self.log.read_text().splitlines()
+        return [arguments[index + 1] for index, value in enumerate(arguments) if value == "-v"]
+
+    def make_repository(self, ignored):
+        subprocess.run(["git", "init", "-q", str(self.repository)], check=True, capture_output=True)
+        (self.repository / ".gitignore").write_text(ignored)
+
+    def test_relative_paths_are_resolved_from_the_callers_directory(self):
+        result = self.smoke_test("input", "out")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.mounts(), [f"{self.caller / 'input'}:/data/input:ro",
+                                         f"{self.caller / 'out'}:/output"])
+        self.assertTrue((self.caller / "out").is_dir())
+        self.assertFalse((self.integration / "out").exists())
+
+    def test_an_output_in_the_repository_must_be_ignored_by_git(self):
+        self.make_repository("")
+        output, source = self.repository / "out", str(self.caller / "input")
+        result = self.smoke_test(source, str(output))
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn(f"Error: the output directory {output} is inside the repository "
+                      f"{self.repository} and not ignored by Git; its files hold patient identifiers",
+                      result.stderr)
+        self.assertFalse(output.exists())
+        self.assertFalse(self.log.exists())
+        (self.repository / ".gitignore").write_text("/out/\n")
+        result = self.smoke_test(source, str(output))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.mounts()[-1], f"{output}:/output")
+
+    def test_default_output_is_smoke_test_output_next_to_the_script(self):
+        self.make_repository("/nnunet_inference/integration/smoke-test-output/\n")
+        result = self.smoke_test(str(self.caller / "input"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.mounts(), [f"{self.caller / 'input'}:/data/input:ro",
+                                         f"{self.integration / 'smoke-test-output'}:/output"])
+
+    def test_missing_input_is_a_usage_error(self):
+        result = self.smoke_test("missing", "out")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("Usage", result.stderr)
+        self.assertFalse((self.caller / "out").exists())
+
+
 REFERENCE_ID = "0123456789ab" + "0" * 52
 CANDIDATE_ID = "fedcba987654" + "0" * 52
 REBUILT_ID = "abcdef012345" + "0" * 52

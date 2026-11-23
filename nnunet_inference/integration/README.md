@@ -164,6 +164,9 @@ IMAGE_TAG=nnunet-vsseg:<VERSION> TTA=false \
 memory/swap cap and validates all DICOM outputs, physical geometry, source IDs and the
 REDCap rows: instances base + 1, base + 2, ..., the dictionary fields, one
 `model_version`, and region sizes that add up to the published mask.
+Relative paths are resolved from the current directory. The output holds patient
+identifiers, so inside the repository it must be a folder that Git ignores, such as the
+default `smoke-test-output/`; the script refuses any other.
 `patch_regression.py` compares actual network logits and masks for
 sequential and parallel folds, with TTA both off and on. Run it using the
 pinned image environment; it requires no medical images.
