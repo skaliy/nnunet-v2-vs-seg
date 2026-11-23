@@ -101,6 +101,8 @@ ror trigger -cont nnunet-vsseg:<VERSION> -each -envs '{"tta":false}'
 ```
 
 `ROR_CONT_OPTIONS` supports `model-type` and `tta` (a JSON Boolean).
+When it is set and not empty, it must hold exactly one JSON object; anything else,
+such as two objects one after the other, is rejected.
 `model-type` is optional and must be `nnunet_large`. **TTA is enabled** by default, as in fastMONAI. TTA averages the original and one copy flipped inferior-superior and anterior-posterior together.
 `{"tta":false}` disables mirror TTA. Unknown keys, other model
 types, string/numeric TTA values and non-objects such as `""` are rejected before
