@@ -16,7 +16,7 @@ VS_CHECKS=1 python -m unittest discover -s projects/vs/checks -p 'test_*.py' -v
 | --- | --- |
 | `test_staging_the_model_gives_the_registered_bundle` | Staging the ResEnc-L folds gives bundle `e91f17a3…0e79cc`, the one registered for REDCap block 100 |
 | `test_prepare_reproduces_dataset003` | A rebuild has the same `dataset.json`, `splits_final.json` and `component_counts.csv` byte for byte, the same image files and the same label voxels |
-| `test_evaluate_reproduces_the_stored_metrics` | Re-scoring the stored fold predictions gives the stored ResEnc-L `per_case.csv` within 1e-6, and the stored file has exactly the three columns that `presentation_summary.py` added besides |
+| `test_evaluate_reproduces_the_stored_metrics` | Re-scoring the stored fold predictions gives the stored ResEnc-L `per_case.csv` and `summary.csv` within 1e-6, and the stored `per_case.csv` has exactly the three columns that `presentation_summary.py` added besides |
 
 `NNUNET_WORKSPACE` (default `nnUNet_data/`) and `VS_SOURCE_ROOT` (default
 `../fastMONAI/research/vestibular_schwannoma`) say where the data are. When set,

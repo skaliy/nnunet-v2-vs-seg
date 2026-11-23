@@ -92,25 +92,36 @@ class VSUnchangedTests(unittest.TestCase):
                     lambda name: same_image(built / "labelsTr" / name, RAW / "labelsTr" / name), labels))
             self.assertEqual([name for name, equal in zip(labels, same) if not equal], [])
 
+    def assert_same_values(self, computed, stored, name):
+        """Every column of `computed` as in `stored`: numbers within METRIC_TOLERANCE."""
+        for column in computed.columns:
+            if pd.api.types.is_numeric_dtype(computed[column]):
+                np.testing.assert_allclose(
+                    computed[column].to_numpy(dtype=float), stored[column].to_numpy(dtype=float),
+                    rtol=0, atol=METRIC_TOLERANCE, equal_nan=True, err_msg=f"{name} {column}")
+            else:
+                self.assertEqual(computed[column].tolist(), stored[column].tolist(),
+                                 f"{name} {column}")
+
     def test_evaluate_reproduces_the_stored_metrics(self):
         stored = pd.read_csv(MODEL / "cv_metrics" / "per_case.csv")
+        stored_summary = pd.read_csv(MODEL / "cv_metrics" / "summary.csv")
         with tempfile.TemporaryDirectory() as tmp:
             run("training/evaluate_cv.py", "--dataset", DATASET,
                 "--nnunet-raw", WORKSPACE / "nnUNet_raw",
                 "--nnunet-preprocessed", WORKSPACE / "nnUNet_preprocessed",
                 "--nnunet-results", WORKSPACE / "nnUNet_results", "--output-dir", tmp)
             computed = pd.read_csv(Path(tmp) / "per_case.csv")
+            summary = pd.read_csv(Path(tmp) / "summary.csv")
         self.assertEqual(len(computed), CASES)
         # The stored file has exactly three more columns, added later by presentation_summary.py.
         self.assertLessEqual(set(computed.columns), set(stored.columns))
         self.assertEqual(set(stored.columns) - set(computed.columns), PRESENTATION_COLUMNS)
-        for column in computed.columns:
-            if pd.api.types.is_numeric_dtype(computed[column]):
-                np.testing.assert_allclose(
-                    computed[column].to_numpy(dtype=float), stored[column].to_numpy(dtype=float),
-                    rtol=0, atol=METRIC_TOLERANCE, equal_nan=True, err_msg=column)
-            else:
-                self.assertEqual(computed[column].tolist(), stored[column].tolist(), column)
+        self.assert_same_values(computed, stored, "per_case.csv")
+        # The summary has the same rows (group and metric) and columns, in the same order.
+        self.assertEqual(list(summary.columns), list(stored_summary.columns))
+        self.assertEqual(len(summary), len(stored_summary))
+        self.assert_same_values(summary, stored_summary, "summary.csv")
 
 
 if __name__ == "__main__":
