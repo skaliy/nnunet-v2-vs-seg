@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pydicom
 import SimpleITK as sitk
+from imagedata.series import Series
 from pydicom.uid import UID
 
 from nnunet_inference import dicom_io
@@ -132,6 +133,103 @@ class TestVoteMapValues(unittest.TestCase):
         # pr2mask draws blue from votemapagree * votemapmax up.
         self.assertGreaterEqual(dicom_io.VOTE_MAP_BLUE, 0.5 * dicom_io.VOTE_MAP_MAX)
         self.assertLess(dicom_io.VOTE_MAP_BLUE - 1, 0.5 * dicom_io.VOTE_MAP_MAX)
+
+
+class TestDerivedValues(unittest.TestCase):
+    """The vote map and the mask store exactly the values we compute, as unsigned
+    16-bit without rescale, whatever the source's pixel representation."""
+
+    SOURCES = {
+        "plain": {},
+        "rescaled": dict(RescaleSlope=2.5, RescaleIntercept=0.0),
+        "signed": dict(PixelRepresentation=1),
+    }
+    VERSIONS = ["Synthetic five-fold model", "aaaaaaaa", "nnUNetv2 test"]
+
+    def _write(self, root, tags, probability, mask):
+        """Write a four-slice source with `tags`, then our vote map and mask."""
+        source = root / "source"
+        for index in range(4):
+            write_image(source / f"{index}.dcm", index, sop_uid=f"1.2.3.4.{index + 1}",
+                        pixels=(np.arange(36).reshape(6, 6) * 7 + index) % 300, **tags)
+        native = root / "native" / "VS_0000.nii.gz"
+        dicom_io.series_to_nifti(dicom_io.read_series(source), native)
+        reference = sitk.ReadImage(str(native))
+        paths = {}
+        for name, arr in (("prob", probability), ("mask", mask)):
+            image = sitk.GetImageFromArray(arr)
+            image.CopyInformation(reference)
+            paths[name] = root / f"{name}.nii.gz"
+            sitk.WriteImage(image, str(paths[name]))
+        dicom_io.write_prob_dicom(paths["prob"], source, root / "vote_map", UID_CONTEXT,
+                                  mask_nifti=paths["mask"], software_versions=self.VERSIONS)
+        dicom_io.write_mask_dicom(paths["mask"], source, root / "mask", UID_CONTEXT,
+                                  software_versions=self.VERSIONS)
+        # The write path reads both NIfTIs with imagedata; so do the expectations.
+        expected_votes = dicom_io.vote_map_values(np.asarray(Series(str(paths["prob"]))),
+                                                  np.asarray(Series(str(paths["mask"]))) > 0)
+        expected_mask = (np.asarray(Series(str(paths["mask"]))) > 0).astype(np.uint16)
+        return source, expected_votes, expected_mask
+
+    def _stored(self, source, out_dir, output_kind):
+        """Check the written headers and return the stored values (z, y, x)."""
+        datasets = [pydicom.dcmread(str(p)) for p in sorted(Path(out_dir).iterdir())]
+        source_positions = {tuple(float(v) for v in pydicom.dcmread(str(p)).ImagePositionPatient)
+                            for p in Path(source).iterdir()}
+        self.assertEqual({tuple(float(v) for v in d.ImagePositionPatient) for d in datasets},
+                         source_positions)
+        for d in datasets:
+            self.assertEqual(d.PixelRepresentation, 0)
+            self.assertEqual(d.BitsAllocated, 16)
+            self.assertEqual(float(d.get("RescaleSlope", 1)), 1.0)
+            self.assertEqual(float(d.get("RescaleIntercept", 0)), 0.0)
+            self.assertEqual(list(d.SoftwareVersions), self.VERSIONS)
+            self.assertIn("model_version=" + "a" * 64, d.DerivationDescription)
+            self.assertEqual(str(d.StudyInstanceUID), "1.2.3")
+            self.assertEqual(str(d.FrameOfReferenceUID), "1.2.3.5")
+            # Deterministic: derived from the source series UID, not a new one.
+            self.assertEqual(str(d.SeriesInstanceUID), dicom_io.make_derived_dicom_uid(
+                UID_CONTEXT, "1.2.3.4", output_kind))
+        # Without a rescale, imagedata returns the stored values in its slice order.
+        stored = np.asarray(dicom_io.read_series(out_dir))
+        self.assertEqual(stored.dtype, np.uint16)
+        return stored
+
+    def test_vote_map_and_mask_store_the_computed_values(self):
+        shape = (4, 6, 6)
+        probability = np.zeros(shape, dtype=np.float32)
+        probability[:, :2] = 0.8
+        probability[:, 2:4] = 0.3
+        probability[1, 4:, :3] = 0.62
+        mask = (probability > 0.5).astype(np.uint8)
+        mask[1, 4:, :3] = 0        # a confident voxel outside the mask
+        mask[2, 5, 5] = 1          # an uncertain voxel inside it
+        for label, tags in self.SOURCES.items():
+            with self.subTest(source=label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source, expected_votes, expected_mask = self._write(root, tags, probability, mask)
+                self.assertEqual(sorted(np.unique(expected_votes).tolist()),
+                                 [0, 19660, 32767, 32768, 52428])
+                votes = self._stored(source, root / "vote_map", "probability")
+                np.testing.assert_array_equal(votes, expected_votes)
+                stored_mask = self._stored(source, root / "mask", "segmentation")
+                np.testing.assert_array_equal(stored_mask, expected_mask)
+                self.assertEqual(sorted(np.unique(stored_mask).tolist()), [0, 1])
+
+    def test_empty_mask_with_uncertain_probabilities_stays_below_blue(self):
+        shape = (4, 6, 6)
+        probability = np.zeros(shape, dtype=np.float32)
+        probability[:, :3] = 0.45
+        probability[:, 3:, :2] = 0.2
+        mask = np.zeros(shape, dtype=np.uint8)
+        for label, tags in self.SOURCES.items():
+            with self.subTest(source=label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source, expected_votes, _ = self._write(root, tags, probability, mask)
+                votes = self._stored(source, root / "vote_map", "probability")
+                np.testing.assert_array_equal(votes, expected_votes)
+                self.assertEqual(int(votes.max()), 29491)
+                self.assertEqual(int(self._stored(source, root / "mask", "segmentation").max()), 0)
 
 
 @requires_dicom_fixture

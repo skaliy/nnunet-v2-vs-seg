@@ -237,6 +237,14 @@ def _write_dicom_from_nifti(nifti_path, template_dir, out_dir, output_kind,
     arr = np.asarray(Series(str(nifti_path)))
     voxels = to_voxels(arr)
     template = read_series(template_dir)
+    if template.dtype != np.uint16:
+        # imagedata reads a rescaled source as float and a signed one as int16,
+        # and would then rescale or wrap what we write. Both outputs are stored
+        # unsigned 16-bit. The copy gets a new series UID from imagedata; keep
+        # the source's, from which the output UIDs are derived.
+        source_series_uid = template.seriesInstanceUID
+        template = template.astype(np.uint16)
+        template.seriesInstanceUID = source_series_uid
     if software_versions:
         template.setDicomAttribute("SoftwareVersions", list(software_versions))
     marker = "MASK" if output_kind == "segmentation" else "PROBABILITY"
