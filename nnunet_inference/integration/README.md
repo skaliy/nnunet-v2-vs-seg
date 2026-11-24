@@ -40,7 +40,11 @@ cd nnunet_inference/integration
 Each invocation stages and verifies the bundle. Successful builds remove the
 reproducible `model/` and `_pkg/` staging copies; `--stage-only` retains them
 for inspection. Choose one build mode per release; `--save` builds, verifies
-and exports in one invocation. `VERSION`
+and exports in one invocation. `--build` and `--save` stop if the image
+`IMAGE_NAME:VERSION` already exists, so a released tag is never moved: remove an
+earlier candidate (`docker image rm`) before building it again under the same tag.
+`IMAGE_NAME:latest` moves to the new image only after it passes the verification run.
+`IMAGE_NAME` is a local repository name without a registry or path. `VERSION`
 defaults to a UTC timestamp. Set `NNUNET_PYTHON` to a staging interpreter when
 needed. `NNUNET_MODEL_SRC` may point to a copy of the same approved Dataset003
 model, whose dataset/plan/trainer/fold identities are checked.
@@ -63,9 +67,17 @@ REDCap imports, and keep them unique across both projects.
 ## CPU and memory contract
 
 Five folds execute concurrently in five CPU worker processes, each with three
-disjoint logical CPUs and three BLAS/OpenMP/PyTorch/ITK threads. The coordinator
-caps affinity to 16 available logical CPUs; at least 15 are required. The
-preprocessed volume and fold results use disk-backed NumPy buffers rather than
+BLAS/OpenMP/PyTorch/ITK threads; at least 15 logical CPUs are required. Which
+CPUs the threads run on depends on the launcher:
+
+- With `--cpuset-cpus` naming 16 logical CPUs or fewer, each worker is tied to
+  three CPUs of its own within that set.
+- Without it, the container sees every CPU of the host and ties its threads to
+  none. Linux runs them on CPUs that are free, so several containers can run at
+  once on a host with enough CPUs and memory, each within its `--cpus 16` and
+  64 GiB limits.
+
+The preprocessed volume and fold results use disk-backed NumPy buffers rather than
 multiprocessing queues, avoiding Docker's default 64 MiB shared-memory limit.
 
 Each worker keeps one copy of its weights. A lock shared by the workers lets one
@@ -83,8 +95,8 @@ docker run --rm --cpus 16 --memory 64g --memory-swap 64g \
   -v /absolute/path/empty-output:/output nnunet-vsseg:<VERSION>
 ```
 
-For fixed host CPU selection, also pass `--cpuset-cpus` with 16 allowed logical
-CPU IDs. The PACS administrator must set equivalent limits on its container
+To choose the host CPUs yourself, also pass `--cpuset-cpus` with 16 logical
+CPU IDs, a different set for each container that runs at the same time. The PACS administrator must set equivalent limits on its container
 launcher; memory limits cannot be encoded in a Dockerfile.
 
 ## Runtime options and outputs
@@ -128,7 +140,8 @@ the same as fastMONAI:
 - **One instance per region.** pr2mask numbers the mask's 26-connected regions 1, 2, 3, ...
   Region k goes to repeat instance base + k (101, 102, ... for the large bundle). Only
   instances with a region are written. A rerun overwrites the bundle's instances; if it finds
-  fewer regions, the earlier run's higher instances stay.
+  fewer regions, the earlier run's higher instances stay. A prediction with 100 or more
+  separate regions makes the run fail, so nothing is sent to PACS or REDCap.
 - **Empty mask:** instance base + 1 with blank columns, so REDCap shows the model ran. It is
   routed by the source PatientID and ReferringPhysicianName (`EventName:` removed), like
   pr2mask. pr2mask lists no columns then, so the exporter takes them from
@@ -160,10 +173,13 @@ IMAGE_TAG=nnunet-vsseg:<VERSION> TTA=false \
 # Repeat with TTA=true and a fresh output directory to qualify full-case TTA.
 ```
 
-`smoke-test.sh` fixes CPU affinity to 16 logical threads, applies a 64 GiB
+`smoke-test.sh` assigns 16 logical CPUs (`CPUSET`, by default the first 16), applies a 64 GiB
 memory/swap cap and validates all DICOM outputs, physical geometry, source IDs and the
 REDCap rows: instances base + 1, base + 2, ..., the dictionary fields, one
 `model_version`, and region sizes that add up to the published mask.
+Relative paths are resolved from the current directory. The output holds patient
+identifiers, so inside the repository it must be a folder that Git ignores, such as the
+default `smoke-test-output/`; the script refuses any other.
 `patch_regression.py` compares actual network logits and masks for
 sequential and parallel folds, with TTA both off and on. Run it using the
 pinned image environment; it requires no medical images.
@@ -180,8 +196,7 @@ docker run --rm --network none --cpus 16 --memory 64g --memory-swap 64g \
   'python /validation/patch_regression.py --output /validation/output/patch_results.json'
 ```
 
-The helper caps affinity to 16 logical CPUs and compares all five folds by
-default. Add `--folds 0,1` for a smaller diagnostic regression or `--tta false`
+The helper compares all five folds by default. Add `--folds 0,1` for a smaller diagnostic regression or `--tta false`
 to run only the non-TTA condition. Completed production qualification should
 record the full five-fold results.
 
@@ -208,7 +223,8 @@ disagree on the mask pixels, the script stops before the candidate runs; if they
 on the pixels of another output, those pixels are not compared, and the lines after the
 result say which and how many.
 
-Build the candidate with the release's `VERSION` under another `IMAGE_NAME`, on the
+Build the candidate with the release's `VERSION` under another `IMAGE_NAME` (remove an
+earlier candidate first; `build.sh` refuses an existing tag), on the
 release's Fiona base (`FIONA_BASE=haukebartsch/fiona-component-python@sha256:<digest>`).
 The script reads the release's `CONTAINER_VERSION` from its image configuration and gives
 it to the candidate for the run, so the image name is not a difference. Each run is
@@ -223,7 +239,9 @@ directory are reused for the same image ID, so a rebuilt candidate is run again.
 is drawn into the fused images, so use a new work directory each day.
 
 `--save` writes `release_packages/<VERSION>/` with the Docker archive, a short README
-(`release.py`: load, image ID, run, REDCap) and `ror_select_entry.txt`. Don't add a
+(`release.py`: load, image ID, run, REDCap) and `ror_select_entry.txt`. It fills
+`release_packages/.<VERSION>.partial/` and renames it only when all three are written, so
+a failed run leaves no package for its `VERSION`. Don't add a
 `.sha256`; the image ID after `docker load` is the check. Add what changed and what was
 tested to the README by hand. A built image is not automatically inference-qualified. Use a
 site-controlled selector for a single CE-T1 input series:

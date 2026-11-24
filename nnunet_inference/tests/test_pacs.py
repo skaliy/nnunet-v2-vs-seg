@@ -1,13 +1,21 @@
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
+import pydicom
+from pydicom.dataset import Dataset
+from pydicom.sequence import Sequence
+
 from nnunet_inference import pacs
 from nnunet_inference.redcap_output import MODEL_INSTANCES_PATH
+from nnunet_inference.tests.synthetic import write_image
 from nnunet_inference.tests.test_redcap_output import fixture
 
 
@@ -72,7 +80,8 @@ class PacsTests(unittest.TestCase):
                 output = root / "output"
                 output.mkdir()
                 with patch.object(pacs.subprocess, "run"), \
-                        patch.object(pacs, "tag_pr2mask_mask") as tag_mask:
+                        patch.object(pacs, "tag_pr2mask_mask") as tag_mask, \
+                        redirect_stderr(io.StringIO()):
                     with self.assertRaisesRegex(RuntimeError, "exactly one mask series"):
                         pacs.postprocess(source, work, output, deployment, version="test",
                                          container="nnunet-vsseg:test",
@@ -88,13 +97,76 @@ class PacsTests(unittest.TestCase):
             output.mkdir()
             deployment = dict(model_type="nnunet_large", model_name="Large", bundle_sha256="a" * 64,
                               members=[dict(member_id=f"fold_{n}") for n in range(5)])
-            with patch.object(pacs.subprocess, "run", side_effect=RuntimeError("tool failure")):
+            with patch.object(pacs.subprocess, "run", side_effect=RuntimeError("tool failure")), \
+                    redirect_stderr(io.StringIO()):
                 with self.assertRaisesRegex(RuntimeError, "tool failure"):
                     pacs.postprocess(source, work, output, deployment, version="test",
                                      container="nnunet-vsseg:test",
                                      use_tta=True, pr2mask_dir=Path("/pr2mask"))
             self.assertFalse(any(output.iterdir()))
 
+
+    def stand_in_tools(self, root, script):
+        """pr2mask stand-ins that run `script`."""
+        tools = root / "pr2mask"
+        tools.mkdir()
+        for name in ("imageAndMask2Report", "imageAndMask2Fused"):
+            (tools / name).write_text("#!/bin/sh\n" + script)
+            (tools / name).chmod(0o755)
+        return tools
+
+    def run_postprocess(self, root, tools, source, work):
+        output = root / "output"
+        output.mkdir()
+        deployment = dict(model_type="nnunet_large", model_name="Large",
+                          bundle_sha256=next(iter(json.loads(MODEL_INSTANCES_PATH.read_text()))),
+                          members=[dict(member_id=f"fold_{n}") for n in range(5)])
+        stderr = io.StringIO()
+        try:
+            with redirect_stderr(stderr):
+                pacs.postprocess(source, work, output, deployment, version="test",
+                                 container="nnunet-vsseg:test", use_tta=True, pr2mask_dir=tools)
+        finally:
+            self.stderr, self.output = stderr.getvalue(), output
+
+    def test_failing_pr2mask_tool_leaves_its_last_40_log_lines_on_stderr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, work, *_ = fixture(root)
+            tools = self.stand_in_tools(root, 'for i in $(seq 1 60); do echo "line $i"; done\n'
+                                              'echo "pr2mask: cannot read the mask series" >&2\n'
+                                              'exit 3\n')
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.run_postprocess(root, tools, source, work)
+            lines = self.stderr.splitlines()
+            self.assertIn("pr2mask: cannot read the mask series", lines)
+            self.assertIn("line 22", lines)
+            self.assertNotIn("line 21", lines)
+            self.assertFalse(any(self.output.iterdir()))
+
+    def test_missing_pr2mask_products_leave_its_log_on_stderr(self):
+        # pr2mask can print a message and exit 0 without writing its products.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, work, *_ = fixture(root)
+            shutil.rmtree(work / "labels" / "1.2.8")
+            tools = self.stand_in_tools(root, 'echo "readMaskImageSerie: no mask series"\n')
+            with self.assertRaisesRegex(RuntimeError, "exactly one mask series"):
+                self.run_postprocess(root, tools, source, work)
+            self.assertIn("readMaskImageSerie: no mask series", self.stderr)
+            self.assertFalse(any(self.output.iterdir()))
+
+    def test_successful_pr2mask_run_writes_nothing_to_stderr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, work, *_ = fixture(root)
+            for name in ("vote_map", "fused", "fused_vote_map", "reports"):
+                (work / name).mkdir()
+            tools = self.stand_in_tools(root, 'echo "pr2mask: done"\n')
+            with patch.object(pacs, "tag_pr2mask_mask"):
+                self.run_postprocess(root, tools, source, work)
+            self.assertEqual(self.stderr, "")
+            self.assertIn("pr2mask: done", (self.output / pacs.LOG_NAME).read_text())
 
     def test_products_appear_only_when_all_are_complete(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,13 +214,33 @@ class PacsTests(unittest.TestCase):
             self.assertFalse(any(output.iterdir()))
             self.assertTrue(all((work / name).is_dir() for name in pacs.FINAL_OUTPUTS))
 
+    def test_multi_frame_input_is_named_in_the_error(self):
+        frame = Dataset()
+        frame.PlanePositionSequence = Sequence([Dataset()])
+        frame.PlanePositionSequence[0].ImagePositionPatient = [0, 0, 0]
+        # Enhanced MR keeps the slice positions in the per-frame functional groups.
+        for tags in (dict(NumberOfFrames="3"),
+                     dict(NumberOfFrames="1", PerFrameFunctionalGroupsSequence=Sequence([frame]))):
+            with self.subTest(tags=sorted(tags)), tempfile.TemporaryDirectory() as tmp:
+                path = write_image(Path(tmp) / "enhanced.dcm", 0, **tags)
+                dataset = pydicom.dcmread(str(path))
+                del dataset.ImagePositionPatient
+                dataset.save_as(str(path))
+                with self.assertRaisesRegex(ValueError, r"multi-frame \(Enhanced\) DICOM input "
+                                                        r"is not supported"):
+                    pacs.validate_input(tmp)
+
+    def test_single_frame_input_with_one_frame_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for index in range(3):
+                write_image(Path(tmp) / f"{index}.dcm", index, NumberOfFrames="1")
+            pacs.validate_input(tmp)
+
     def test_model_version_names_model_folds_and_image(self):
         members = [dict(member_id=f"fold_{n}") for n in range(5)]
         self.assertEqual(pacs.model_version(dict(model_type="nnunet_large", members=members),
                                             "nnunet-vsseg:20261111T090000Z"),
                          "nnunet_large 5-fold, nnunet-vsseg:20261111T090000Z")
-        self.assertEqual(pacs.model_version(dict(model_type="nnunet_large", members=members[:1]), "x:1"),
-                         "nnunet_large single model, x:1")
 
     def test_run_requires_version_and_container(self):
         for version, container in [(None, "nnunet-vsseg:test"), ("test", None)]:
@@ -157,18 +249,50 @@ class PacsTests(unittest.TestCase):
                 pacs.run_pacs("/missing", "/missing", version=version, container=container)
 
 
+@unittest.skipUnless(shutil.which("jq"), "entrypoint.sh validates ROR_CONT_OPTIONS with jq, "
+                                         "which is not installed on this machine")
+class ConfigureCpuTests(unittest.TestCase):
+    def configure(self, available):
+        printed = io.StringIO()
+        with patch("os.sched_getaffinity", return_value=set(available)), \
+                patch("os.sched_setaffinity") as pin, patch.dict(os.environ), \
+                patch("torch.set_num_threads") as threads, \
+                patch("torch.set_num_interop_threads"), \
+                patch("SimpleITK.ProcessObject.SetGlobalDefaultNumberOfThreads"), \
+                redirect_stdout(printed):
+            pacs.configure_cpu()
+            self.assertEqual(os.environ["OMP_NUM_THREADS"], "3")
+        threads.assert_called_once_with(3)
+        return pin, printed.getvalue()
+
+    def test_a_host_without_assigned_cpus_is_not_narrowed_to_its_lowest_cpus(self):
+        pin, printed = self.configure(range(64))
+        pin.assert_not_called()
+        self.assertEqual(printed, "64 CPUs available, threads not pinned; 5 workers x 3 threads\n")
+
+    def test_assigned_cpus_are_kept_and_printed(self):
+        pin, printed = self.configure(range(16, 32))
+        pin.assert_not_called()
+        self.assertEqual(printed, f"CPU affinity: {list(range(16, 32))}; 5 workers x 3 threads\n")
+
+    def test_fewer_than_fifteen_cpus_are_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "at least 15 available CPU threads; got 14"):
+            self.configure(range(14))
+
+
 class EntrypointTests(unittest.TestCase):
     def test_boolean_options_default_and_rejections(self):
         entrypoint = Path(__file__).resolve().parents[1] / "integration/entrypoint.sh"
         for options, expected in [("", "--tta"), ("{}", "--tta"), ('{"tta":true}', "--tta"),
                                   ('{"tta":false}', "--no-tta"),
+                                  ('{"model-type":"nnunet_large"}', "--tta"),
                                   ('{"model-type":"nnunet_large","tta":true}', "--tta"),
                                   ('""', None), ('{"tta":""}', None), ('{"--tta":""}', None),
                                   ('{"tta":"false"}', None), ('{"tta":null}', None),
                                   ('{"model-type":"large"}', None), ('{"model-type":"nnunet_medium"}', None),
-                                  ('{"other":1}', None),
+                                  ('{"other":1}', None), (" ", None),
                                   ('{"tta":true};touch /tmp/invalid', None)]:
-            with tempfile.TemporaryDirectory() as tmp:
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 (root / "python").write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
                 (root / "python").chmod(0o755)

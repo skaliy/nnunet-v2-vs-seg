@@ -6,9 +6,10 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
-from .cpu import MAX_THREADS, THREADS_PER_FOLD, set_thread_environment
+from .cpu import THREADS_PER_FOLD, cpus_are_assigned, set_thread_environment
 from .deployment import MODELS, validate_deployment
 from .dicom_io import tag_pr2mask_mask
 from .pipeline import run_inference
@@ -17,6 +18,7 @@ from .redcap_output import _series, model_instance_base, write_redcap_output
 
 FINAL_OUTPUTS = ("labels", "fused", "fused_vote_map", "reports", "redcap")
 LOG_NAME = "pacs_command.log"
+LOG_TAIL_LINES = 40   # of LOG_NAME, printed to stderr when postprocessing fails
 # pr2mask fits about 40 title characters on a fused image, so long model types
 # get a shorter visible label.
 TITLE_LABELS = {"nnunet_large": "nnunet_l"}
@@ -24,17 +26,18 @@ TITLE_LABELS = {"nnunet_large": "nnunet_l"}
 
 def configure_cpu():
     required = len(FIVE_FOLDS) * THREADS_PER_FOLD
-    cpus = sorted(os.sched_getaffinity(0))[:MAX_THREADS]
+    cpus = sorted(os.sched_getaffinity(0))
     if len(cpus) < required:
         raise RuntimeError(f"Five-fold inference requires at least {required} available CPU threads; got {len(cpus)}")
-    os.sched_setaffinity(0, cpus)
     set_thread_environment()
     import torch
     import SimpleITK as sitk
     torch.set_num_threads(THREADS_PER_FOLD)
     torch.set_num_interop_threads(1)
     sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(THREADS_PER_FOLD)
-    print(f"CPU affinity: {cpus}; {len(FIVE_FOLDS)} workers x {THREADS_PER_FOLD} threads", flush=True)
+    placement = (f"CPU affinity: {cpus}" if cpus_are_assigned(cpus)
+                 else f"{len(cpus)} CPUs available, threads not pinned")
+    print(f"{placement}; {len(FIVE_FOLDS)} workers x {THREADS_PER_FOLD} threads", flush=True)
 
 
 def prepare_output(output_dir):
@@ -88,10 +91,11 @@ def publish(work_dir, output_dir, log_path):
 
 
 def model_version(deployment, container):
-    """REDCap model_version, e.g. 'nnunet_large 5-fold, nnunet-vsseg:20261111T090000Z'."""
-    count = len(deployment["members"])
-    members = f"{count}-fold" if count > 1 else "single model"
-    return f"{deployment['model_type']} {members}, {container}"
+    """REDCap model_version, e.g. 'nnunet_large 5-fold, nnunet-vsseg:20261111T090000Z'.
+
+    validate_deployment requires the five fold members.
+    """
+    return f"{deployment['model_type']} {len(deployment['members'])}-fold, {container}"
 
 
 def postprocess(input_dir, work_dir, output_dir, deployment, *, version, container,
@@ -114,22 +118,39 @@ def postprocess(input_dir, work_dir, output_dir, deployment, *, version, contain
          "-u", identity + "_votemap", "-s", "peak agreement {peak_agreement}", "-t", info + " "],
     ]
     log_path = work_dir / LOG_NAME
-    with log_path.open("w") as log:
-        for command in commands:
-            subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
-    # pr2mask's labels/ series is the published mask; it only gets our provenance.
-    labels = sorted(path for path in (work_dir / "labels").glob("*") if path.is_dir())
-    if len(labels) != 1:
-        raise RuntimeError(
-            f"pr2mask must create exactly one mask series in {work_dir / 'labels'}; "
-            f"found {len(labels)}")
-    tag_pr2mask_mask(labels[0], work_dir / "mask")
-    write_redcap_output(work_dir, input_dir, deployment,
-                        model_version=model_version(deployment, container))
-    missing = [n for n in FINAL_OUTPUTS if not (work_dir / n).is_dir()]
-    if missing:
-        raise RuntimeError(f"Missing required PACS products: {missing}")
+    try:
+        with log_path.open("w") as log:
+            for command in commands:
+                subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
+        # pr2mask's labels/ series is the published mask; it only gets our provenance.
+        labels = sorted(path for path in (work_dir / "labels").glob("*") if path.is_dir())
+        if len(labels) != 1:
+            raise RuntimeError(
+                f"pr2mask must create exactly one mask series in {work_dir / 'labels'}; "
+                f"found {len(labels)}")
+        tag_pr2mask_mask(labels[0], work_dir / "mask")
+        write_redcap_output(work_dir, input_dir, deployment,
+                            model_version=model_version(deployment, container))
+        missing = [n for n in FINAL_OUTPUTS if not (work_dir / n).is_dir()]
+        if missing:
+            raise RuntimeError(f"Missing required PACS products: {missing}")
+    except Exception:
+        # The work directory, and the log with it, is deleted as the error propagates.
+        show_log_tail(log_path)
+        raise
     publish(work_dir, output_dir, log_path)
+
+
+def show_log_tail(log_path):
+    """Print the last LOG_TAIL_LINES lines of pr2mask's log to stderr."""
+    try:
+        lines = Path(log_path).read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:]
+    except OSError:
+        return
+    if lines:
+        print(f"Last {len(lines)} lines of {LOG_NAME}:", *lines, sep="\n", file=sys.stderr, flush=True)
+    else:
+        print(f"{LOG_NAME} is empty", file=sys.stderr, flush=True)
 
 
 def run_pacs(input_dir, output_dir, *, model_dir="/app/model", version, container,

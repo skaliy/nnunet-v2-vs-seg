@@ -36,11 +36,22 @@ def small_resenc_unet():
 
 
 class ParallelTests(unittest.TestCase):
-    def test_cpus_are_disjoint_capped_and_handle_noncontiguous_affinity(self):
-        available = list(range(2, 80, 2))
-        cpus = assign_worker_cpus(5, available)
+    def test_assigned_cpus_give_each_worker_three_of_its_own(self):
+        # A cpuset from the launcher: at most 16 logical CPUs, not necessarily contiguous.
+        cpus = assign_worker_cpus(5, list(range(2, 34, 2)))
         self.assertEqual(cpus, [[2, 4, 6], [8, 10, 12], [14, 16, 18], [20, 22, 24], [26, 28, 30]])
         self.assertEqual(len(set(sum(cpus, []))), 15)
+        self.assertEqual(assign_worker_cpus(5, list(range(15))),
+                         [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11], [12, 13, 14]])
+
+    def test_workers_are_not_pinned_when_no_cpus_were_assigned(self):
+        # More than 16 CPUs means the launcher assigned none: taking the lowest
+        # would put every container of a host on the same ones.
+        for available in (list(range(17)), list(range(64)), list(range(2, 80, 2))):
+            with self.subTest(cpus=len(available)):
+                self.assertEqual(assign_worker_cpus(5, available), [None] * 5)
+
+    def test_too_few_cpus_are_refused(self):
         with self.assertRaisesRegex(RuntimeError, "require 15"):
             assign_worker_cpus(5, list(range(14)))
 

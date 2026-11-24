@@ -18,6 +18,9 @@ from nnunet_inference.redcap_output import (
     INSTRUMENT, MODEL_VERSION_FIELD, model_instance_base, pr2mask_dictionary_rows)
 
 EXPECTED_OUTPUTS = ("fused", "fused_vote_map", "reports", "labels", "redcap")
+# Outputs that must lie on the input's slices, and how far their geometry may differ (mm).
+ON_INPUT_GRID = ("labels", "fused", "fused_vote_map")
+GEOMETRY_TOLERANCE = 1e-3
 
 
 def _dicom_files(directory):
@@ -38,6 +41,51 @@ def _read_series(directory, *, validate_derived):
             check_derived_identity(dataset, path)
         datasets.append(dataset)
     return datasets
+
+
+def _geometry(dataset, name, keyword):
+    value = dataset.get(keyword)
+    if value is None:
+        raise RuntimeError(f"{name} has a slice without {keyword}")
+    return np.asarray(value, dtype=float)
+
+
+def _check_geometry(name, datasets, source):
+    """The output has the input's slices: the same number and, paired along the
+    input's slice normal, the same pixel grid and frame of reference."""
+    if len(datasets) != len(source):
+        raise RuntimeError(f"{name} slice count {len(datasets)} != input {len(source)}")
+    orientation = _geometry(source[0], "input", "ImageOrientationPatient")
+    normal = np.cross(orientation[:3], orientation[3:])
+
+    def along_normal(series, series_name):
+        return sorted(series, key=lambda d: float(
+            _geometry(d, series_name, "ImagePositionPatient") @ normal))
+
+    pairs = zip(along_normal(datasets, name), along_normal(source, "input"))
+    for number, (output, original) in enumerate(pairs, start=1):
+        differences = [f"{keyword} {output.get(keyword)} != {original.get(keyword)}"
+                       for keyword in ("Rows", "Columns")
+                       if output.get(keyword) != original.get(keyword)]
+        for keyword in ("ImagePositionPatient", "ImageOrientationPatient", "PixelSpacing"):
+            value, expected = _geometry(output, name, keyword), _geometry(original, "input", keyword)
+            if value.shape != expected.shape or not np.allclose(
+                    value, expected, rtol=0, atol=GEOMETRY_TOLERANCE):
+                differences.append(f"{keyword} {value.tolist()} != {expected.tolist()}")
+        frame, expected_frame = (str(d.get("FrameOfReferenceUID", "")) for d in (output, original))
+        if frame != expected_frame:
+            differences.append(f"FrameOfReferenceUID {frame} != {expected_frame}")
+        if differences:
+            raise RuntimeError(f"{name} slice {number} (along the slice normal) differs from "
+                               f"the input slice: {'; '.join(differences)}")
+
+
+def _redcap_destination(source):
+    """record_id and redcap_event_name as the container derives them from the input."""
+    first = source[0]
+    event = str(first.get("ReferringPhysicianName", ""))
+    return dict(record_id=str(first.get("PatientID", "")).rstrip(),
+                redcap_event_name=event.removeprefix("EventName:"))
 
 
 def validate(input_dir, output_dir):
@@ -75,6 +123,8 @@ def validate(input_dir, output_dir):
 
     if output_series.intersection(source_series) or output_sops.intersection(source_sops):
         raise RuntimeError("derived DICOM UIDs collide with source UIDs")
+    for name in ON_INPUT_GRID:
+        _check_geometry(name, by_name[name], source)
 
     mask = by_name["labels"]
     fused_study_ids = {str(d.get("StudyID", "")) for d in by_name["fused"]}
@@ -82,8 +132,6 @@ def validate(input_dir, output_dir):
         raise RuntimeError("mask StudyID differs from fused; the PACS would file them apart")
     if "reports" not in by_name and any(np.any(d.pixel_array) for d in mask):
         raise RuntimeError("Nonempty mask did not produce a report")
-    if len(mask) != len(source):
-        raise RuntimeError(f"mask slice count {len(mask)} != input {len(source)}")
     for dataset in mask:
         values = set(np.unique(dataset.pixel_array).tolist())
         if not values.issubset({0, 1}):
@@ -104,6 +152,11 @@ def validate(input_dir, output_dir):
         raise RuntimeError("Incorrect REDCap instrument")
     if len({(row["record_id"], row["redcap_event_name"]) for row in rows}) != 1:
         raise RuntimeError("Mixed REDCap destinations")
+    # The values are patient identifiers, so the message does not show them.
+    for field, expected in _redcap_destination(source).items():
+        if rows[0][field] != expected:
+            source_field = "PatientID" if field == "record_id" else "ReferringPhysicianName"
+            raise RuntimeError(f"REDCap {field} differs from the input's {source_field}")
     instances = {}
     for row in rows:
         values = instances.setdefault(row["redcap_repeat_instance"], {})

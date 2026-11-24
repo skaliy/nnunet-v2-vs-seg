@@ -50,6 +50,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Defaults to <trained-model>/cv_metrics.",
     )
     parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace per_case.csv and summary.csv when the output directory has them.",
+    )
+    parser.add_argument(
         "--allow-missing-folds",
         action="store_true",
         help=(
@@ -134,7 +139,8 @@ def summarize(frame: pd.DataFrame, metric_names: list[str]) -> pd.DataFrame:
                     "group": group_name,
                     "metric": metric_name,
                     "mean": float(finite.mean()) if len(finite) else float("nan"),
-                    "std": float(finite.std()) if len(finite) else float("nan"),
+                    # The sample standard deviation (n - 1), as pandas and fastMONAI report it.
+                    "std": float(finite.std(ddof=1)) if len(finite) > 1 else float("nan"),
                     "finite_cases": int(len(finite)),
                     "total_cases": int(len(values)),
                 }
@@ -194,6 +200,13 @@ def main(argv: list[str] | None = None, calculate_all_metrics=None) -> int:
         )
     if not fold_predictions:
         raise SystemExit("No validation predictions were found")
+    existing = [path for path in (output_dir / "per_case.csv", output_dir / "summary.csv")
+                if path.exists()]
+    if existing and not args.overwrite:
+        raise SystemExit(
+            f"Results already exist: {', '.join(map(str, existing))}. "
+            "Choose another --output-dir, or pass --overwrite to replace them."
+        )
 
     rows = []
     for fold, predictions in fold_predictions:

@@ -1,12 +1,19 @@
 """Unit tests for nnunet_inference.dicom_io (geometry I/O)."""
+from contextlib import contextmanager, nullcontext, redirect_stdout
+import io
 import os
+import re
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pydicom
 import SimpleITK as sitk
+from imagedata.header import Header
+from imagedata.series import Series
 from pydicom.uid import UID
 
 from nnunet_inference import dicom_io
@@ -132,6 +139,424 @@ class TestVoteMapValues(unittest.TestCase):
         # pr2mask draws blue from votemapagree * votemapmax up.
         self.assertGreaterEqual(dicom_io.VOTE_MAP_BLUE, 0.5 * dicom_io.VOTE_MAP_MAX)
         self.assertLess(dicom_io.VOTE_MAP_BLUE - 1, 0.5 * dicom_io.VOTE_MAP_MAX)
+
+
+@contextmanager
+def imagedata_397_header_copies():
+    """Copy Series headers as imagedata 3.9.7, the image's version, does.
+
+    In 3.9.7, Header.add_template carries SOPInstanceUIDs over only from a
+    header with ``keep_uid``, which a Series read from disk does not have, and
+    Series.SOPInstanceUIDs makes up new UIDs when none are set. 3.9.6 copies
+    them always. Under 3.9.7 this behaves as imagedata itself does for these
+    single-tag stacks, so the tests that use it mean the same in both versions.
+    """
+    add_template = Header.add_template
+
+    def add_template_397(self, template):
+        kept = getattr(self, "SOPInstanceUIDs", None)
+        add_template(self, template)
+        if template is not None and "keep_uid" not in template.__dict__:
+            self.SOPInstanceUIDs = kept
+
+    def sop_instance_uids_397(series):
+        if series.header.SOPInstanceUIDs is None:
+            series.header.SOPInstanceUIDs = {(0, index): series.header.new_uid()
+                                             for index in range(series.slices)}
+        return series.header.SOPInstanceUIDs
+
+    with mock.patch.object(Header, "add_template", add_template_397), \
+            mock.patch.object(Series, "SOPInstanceUIDs",
+                              property(sop_instance_uids_397, Series.SOPInstanceUIDs.fset)):
+        yield
+
+
+class TestDerivedValues(unittest.TestCase):
+    """The vote map and the mask store exactly the values we compute, as unsigned
+    16-bit without rescale, whatever the source's pixel representation."""
+
+    SOURCES = {
+        "plain": {},
+        "rescaled": dict(RescaleSlope=2.5, RescaleIntercept=0.0),
+        "signed": dict(PixelRepresentation=1),
+    }
+    VERSIONS = ["Synthetic five-fold model", "aaaaaaaa", "nnUNetv2 test"]
+
+    def _source(self, root, tags, probability, mask):
+        """Write a four-slice source with `tags` and the prediction NIfTIs on its grid."""
+        source = root / "source"
+        for index in range(4):
+            write_image(source / f"{index}.dcm", index, sop_uid=f"1.2.3.4.{index + 1}",
+                        pixels=(np.arange(36).reshape(6, 6) * 7 + index) % 300, **tags)
+        native = root / "native" / "VS_0000.nii.gz"
+        dicom_io.series_to_nifti(dicom_io.read_series(source), native)
+        reference = sitk.ReadImage(str(native))
+        paths = {}
+        for name, arr in (("prob", probability), ("mask", mask)):
+            image = sitk.GetImageFromArray(arr)
+            image.CopyInformation(reference)
+            paths[name] = root / f"{name}.nii.gz"
+            sitk.WriteImage(image, str(paths[name]))
+        return source, paths
+
+    def _derive(self, source, paths, out_root):
+        """Write our vote map and mask of `source` under `out_root`."""
+        dicom_io.write_prob_dicom(paths["prob"], source, out_root / "vote_map", UID_CONTEXT,
+                                  mask_nifti=paths["mask"], software_versions=self.VERSIONS)
+        dicom_io.write_mask_dicom(paths["mask"], source, out_root / "mask", UID_CONTEXT,
+                                  software_versions=self.VERSIONS)
+
+    def _write(self, root, tags, probability, mask):
+        """Write a four-slice source with `tags`, then our vote map and mask."""
+        source, paths = self._source(root, tags, probability, mask)
+        self._derive(source, paths, root)
+        # The write path reads both NIfTIs with imagedata; so do the expectations.
+        expected_votes = dicom_io.vote_map_values(np.asarray(Series(str(paths["prob"]))),
+                                                  np.asarray(Series(str(paths["mask"]))) > 0)
+        expected_mask = (np.asarray(Series(str(paths["mask"]))) > 0).astype(np.uint16)
+        return source, expected_votes, expected_mask
+
+    @staticmethod
+    def _position(dataset):
+        return tuple(float(v) for v in dataset.ImagePositionPatient)
+
+    def _expected_sop_uids(self, source, output_kind):
+        """Derived SOP UID by slice position, read from the source files alone.
+
+        Each comes from the SOP UID of the source slice at that position and the
+        slice's index along the slice normal (imagedata's slice order)."""
+        datasets = [pydicom.dcmread(str(p), stop_before_pixels=True)
+                    for p in Path(source).iterdir()]
+        row, column = np.reshape(np.asarray(datasets[0].ImageOrientationPatient, float), (2, 3))
+        normal = np.cross(row, column)
+        datasets.sort(key=lambda d: float(np.dot(np.asarray(d.ImagePositionPatient, float),
+                                                 normal)))
+        return {self._position(d): dicom_io.make_derived_dicom_uid(
+                    UID_CONTEXT, str(d.SeriesInstanceUID), output_kind,
+                    source_sop_uid=str(d.SOPInstanceUID), slice_index=index)
+                for index, d in enumerate(datasets)}
+
+    def _sop_uids(self, out_dir):
+        """SOP UID by slice position of a written series."""
+        datasets = [pydicom.dcmread(str(p), stop_before_pixels=True)
+                    for p in Path(out_dir).iterdir()]
+        for d in datasets:
+            self.assertEqual(str(d.file_meta.MediaStorageSOPInstanceUID), str(d.SOPInstanceUID))
+        return {self._position(d): str(d.SOPInstanceUID) for d in datasets}
+
+    def _stored(self, source, out_dir, output_kind):
+        """Check the written headers and return the stored values (z, y, x)."""
+        datasets = [pydicom.dcmread(str(p)) for p in sorted(Path(out_dir).iterdir())]
+        source_positions = {tuple(float(v) for v in pydicom.dcmread(str(p)).ImagePositionPatient)
+                            for p in Path(source).iterdir()}
+        self.assertEqual({tuple(float(v) for v in d.ImagePositionPatient) for d in datasets},
+                         source_positions)
+        # Deterministic and bound to the source instances.
+        self.assertEqual(self._sop_uids(out_dir), self._expected_sop_uids(source, output_kind))
+        for d in datasets:
+            self.assertEqual(d.PixelRepresentation, 0)
+            self.assertEqual(d.BitsAllocated, 16)
+            self.assertEqual(float(d.get("RescaleSlope", 1)), 1.0)
+            self.assertEqual(float(d.get("RescaleIntercept", 0)), 0.0)
+            self.assertEqual(list(d.SoftwareVersions), self.VERSIONS)
+            self.assertIn("model_version=" + "a" * 64, d.DerivationDescription)
+            self.assertEqual(str(d.StudyInstanceUID), "1.2.3")
+            self.assertEqual(str(d.FrameOfReferenceUID), "1.2.3.5")
+            # Deterministic: derived from the source series UID, not a new one.
+            self.assertEqual(str(d.SeriesInstanceUID), dicom_io.make_derived_dicom_uid(
+                UID_CONTEXT, "1.2.3.4", output_kind))
+        # Without a rescale, imagedata returns the stored values in its slice order.
+        stored = np.asarray(dicom_io.read_series(out_dir))
+        self.assertEqual(stored.dtype, np.uint16)
+        return stored
+
+    def test_vote_map_and_mask_store_the_computed_values(self):
+        shape = (4, 6, 6)
+        probability = np.zeros(shape, dtype=np.float32)
+        probability[:, :2] = 0.8
+        probability[:, 2:4] = 0.3
+        probability[1, 4:, :3] = 0.62
+        mask = (probability > 0.5).astype(np.uint8)
+        mask[1, 4:, :3] = 0        # a confident voxel outside the mask
+        mask[2, 5, 5] = 1          # an uncertain voxel inside it
+        for label, tags in self.SOURCES.items():
+            with self.subTest(source=label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source, expected_votes, expected_mask = self._write(root, tags, probability, mask)
+                self.assertEqual(sorted(np.unique(expected_votes).tolist()),
+                                 [0, 19660, 32767, 32768, 52428])
+                votes = self._stored(source, root / "vote_map", "probability")
+                np.testing.assert_array_equal(votes, expected_votes)
+                stored_mask = self._stored(source, root / "mask", "segmentation")
+                np.testing.assert_array_equal(stored_mask, expected_mask)
+                self.assertEqual(sorted(np.unique(stored_mask).tolist()), [0, 1])
+
+    def test_empty_mask_with_uncertain_probabilities_stays_below_blue(self):
+        shape = (4, 6, 6)
+        probability = np.zeros(shape, dtype=np.float32)
+        probability[:, :3] = 0.45
+        probability[:, 3:, :2] = 0.2
+        mask = np.zeros(shape, dtype=np.uint8)
+        for label, tags in self.SOURCES.items():
+            with self.subTest(source=label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source, expected_votes, _ = self._write(root, tags, probability, mask)
+                votes = self._stored(source, root / "vote_map", "probability")
+                np.testing.assert_array_equal(votes, expected_votes)
+                self.assertEqual(int(votes.max()), 29491)
+                self.assertEqual(int(self._stored(source, root / "mask", "segmentation").max()), 0)
+
+    def test_sop_uids_come_from_the_source_instances_and_repeat(self):
+        # Converting the template to uint16 copies its header. imagedata 3.9.7
+        # leaves the SOP UIDs out of that copy and then makes up new ones, so
+        # each subtest also runs with 3.9.7's header copies.
+        shape = (4, 6, 6)
+        probability = np.zeros(shape, dtype=np.float32)
+        probability[1:3, 2:4, 2:4] = 0.9
+        mask = (probability > 0.5).astype(np.uint8)
+        for label, tags in self.SOURCES.items():
+            for copies in ("installed imagedata", "imagedata 3.9.7 header copies"):
+                with self.subTest(source=label, copies=copies), \
+                        tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    emulate = copies != "installed imagedata"
+                    with imagedata_397_header_copies() if emulate else nullcontext():
+                        source, paths = self._source(root, tags, probability, mask)
+                        for run in ("first", "second"):
+                            self._derive(source, paths, root / run)
+                    for kind, name in (("probability", "vote_map"), ("segmentation", "mask")):
+                        first = self._sop_uids(root / "first" / name)
+                        self.assertEqual(first, self._expected_sop_uids(source, kind))
+                        self.assertEqual(self._sop_uids(root / "second" / name), first)
+
+
+AXIAL = (1, 0, 0, 0, 1, 0)
+SAGITTAL = (0, 1, 0, 0, 0, -1)
+
+
+def oblique(row_degrees, column_degrees):
+    """Unit row and column vectors tilted about z and then about the row, as written."""
+    a, b = np.radians(row_degrees), np.radians(column_degrees)
+    vectors = (np.cos(a), np.sin(a), 0.0,
+               -np.sin(a) * np.cos(b), np.cos(a) * np.cos(b), np.sin(b))
+    return tuple(f"{v:.10f}" for v in vectors)
+
+
+def write_stack(directory, count, *, step=1.0, orientation=AXIAL, skip=(), positions=None,
+                reverse_files=False, **tags):
+    """Write `count` slices `step` mm apart along the slice normal, leaving out
+    the indices in `skip`; return (position, pixels, path) for each written slice.
+
+    `positions` (axial only) gives the z positions as written, as strings,
+    instead of multiples of `step`. With `reverse_files`, the file names and the
+    order of writing run against the slice normal."""
+    row, column = np.asarray(orientation[:3], float), np.asarray(orientation[3:], float)
+    normal = np.cross(row, column)
+    rng = np.random.default_rng(count)
+    pixel_values = [rng.integers(0, 1000, (4, 5)) for _ in range(count)]
+    slices = []
+    for index in (range(count - 1, -1, -1) if reverse_files else range(count)):
+        pixels = pixel_values[index]
+        if index in skip:
+            continue
+        if positions is None:
+            position = np.array([3.0, -4.0, 5.0]) + index * step * normal
+            written = [f"{v:.12g}" for v in position]
+        else:
+            assert orientation == AXIAL, "written positions are axial"
+            position = np.array([3.0, -4.0, float(positions[index])])
+            written = ["3", "-4", positions[index]]
+        name = count - 1 - index if reverse_files else index
+        path = write_image(Path(directory) / f"{name:03d}.dcm", index, orientation=orientation,
+                           position=written, pixels=pixels, **tags)
+        slices.append((position, pixels, path))
+    return slices
+
+
+class TestSliceStack(unittest.TestCase):
+    """The stack given to nnU-Net is complete, evenly spaced, and spaced as its
+    slice positions are, whatever SliceThickness or SpacingBetweenSlices say."""
+
+    def check(self, directory):
+        series = dicom_io.read_series(directory)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            dicom_io.check_slice_stack(series, directory)
+        return series, output.getvalue()
+
+    def assert_printed_spacings(self, printed, header, positions, delta=1e-5):
+        """`printed` is the one line naming the header's and the positions' spacing."""
+        match = re.fullmatch(r"  slice spacing (\S+) mm from the header does not match the "
+                             r"slice positions; using their spacing, (\S+) mm\n", printed)
+        self.assertIsNotNone(match, printed)
+        self.assertEqual(float(match[1]), header)
+        self.assertAlmostEqual(float(match[2]), positions, delta=delta)
+
+    def physical_mismatches(self, slices, series, orientation, tmp):
+        """Source pixels not found at their physical position in the NIfTI."""
+        nifti = Path(tmp) / "nifti" / "VS_0000.nii.gz"
+        dicom_io.series_to_nifti(series, nifti)
+        image = sitk.ReadImage(str(nifti))
+        voxels = sitk.GetArrayFromImage(image)
+        row, column = np.asarray(orientation[:3], float), np.asarray(orientation[3:], float)
+        bad = 0
+        for position, pixels, _ in slices:
+            for r, c in np.ndindex(pixels.shape):
+                point = position + c * row + r * column     # PixelSpacing (1, 1)
+                index = image.TransformPhysicalPointToIndex(tuple(float(v) for v in point))
+                inside = all(0 <= i < n for i, n in zip(index, image.GetSize()))
+                bad += not (inside and voxels[index[::-1]] == pixels[r, c])
+        return bad, image.GetSpacing()[2]
+
+    def test_slice_spacing_comes_from_the_positions(self):
+        # No SpacingBetweenSlices: imagedata takes SliceThickness as the spacing.
+        for orientation, step, thickness in ((AXIAL, 0.5, 1.0), (SAGITTAL, -3.3, 3.0)):
+            with self.subTest(step=step, thickness=thickness), \
+                    tempfile.TemporaryDirectory() as tmp:
+                slices = write_stack(Path(tmp) / "in", 9, step=step, orientation=orientation,
+                                     SliceThickness=thickness)
+                series, printed = self.check(Path(tmp) / "in")
+                self.assertAlmostEqual(float(series.spacing[0]), abs(step), places=6)
+                self.assert_printed_spacings(printed, thickness, abs(step))
+                bad, spacing = self.physical_mismatches(slices, series, orientation, tmp)
+                self.assertEqual(bad, 0)
+                self.assertAlmostEqual(spacing, abs(step), places=5)
+
+    def test_wrong_spacing_between_slices_is_corrected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            slices = write_stack(Path(tmp) / "in", 6, step=1.0, SliceThickness=1.0,
+                                 SpacingBetweenSlices=2.0)
+            series, printed = self.check(Path(tmp) / "in")
+            self.assert_printed_spacings(printed, 2.0, 1.0)
+            bad, spacing = self.physical_mismatches(slices, series, AXIAL, tmp)
+            self.assertEqual(bad, 0)
+            self.assertAlmostEqual(spacing, 1.0, places=5)
+
+    def test_non_positive_header_spacing_is_refused(self):
+        # The release failed on these at the NIfTI step; they are not corrected.
+        for tags in (dict(SliceThickness=1.0, SpacingBetweenSlices=-1.0),
+                     dict(SliceThickness=1.0, SpacingBetweenSlices=0.0),
+                     dict(SliceThickness=-1.0), dict(SliceThickness=0.0)):
+            with self.subTest(**tags), tempfile.TemporaryDirectory() as tmp:
+                write_stack(Path(tmp) / "in", 6, step=1.0, **tags)
+                series = dicom_io.read_series(Path(tmp) / "in")
+                self.assertLessEqual(float(series.spacing[0]), 0)
+                with self.assertRaisesRegex(
+                        ValueError, r"slice spacing in the header is not positive: -?[01] mm"):
+                    dicom_io.check_slice_stack(series, Path(tmp) / "in")
+
+    def assert_left_exactly_as_read(self, directory):
+        series = dicom_io.read_series(directory)
+        before = np.array(series.spacing)
+        matrix = series.transformationMatrix    # setting the spacing would discard it
+        output = io.StringIO()
+        with redirect_stdout(output):
+            dicom_io.check_slice_stack(series, directory)
+        self.assertEqual(np.array(series.spacing).tobytes(), before.tobytes())
+        self.assertIs(series.header.transformationMatrix, matrix)
+        self.assertEqual(output.getvalue(), "")
+
+    def test_regular_stack_is_left_exactly_as_read(self):
+        # Like a Siemens series: thickness and position step differ by 1e-8.
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 7, step=1.1000000347, orientation=SAGITTAL,
+                        SliceThickness="1.1000000238")
+            self.assert_left_exactly_as_read(Path(tmp) / "in")
+
+    def test_stack_in_reversed_file_order_is_left_exactly_as_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 9, step=1.2, reverse_files=True, SliceThickness=1.2)
+            self.assert_left_exactly_as_read(Path(tmp) / "in")
+
+    def test_oblique_stack_is_left_exactly_as_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 9, step=0.8, orientation=oblique(13.7, 5.3),
+                        SliceThickness=0.8)
+            self.assert_left_exactly_as_read(Path(tmp) / "in")
+
+    def test_positions_rounded_to_two_decimals_are_accepted(self):
+        # A 2/3 mm step written with two decimals: 0, 0.67, 1.33, 2.0, ... The gaps
+        # are 0.66 or 0.67 mm, but no position is more than 0.005 mm from its place.
+        positions = [f"{index * 2 / 3:.2f}" for index in range(30)]
+        self.assertEqual(positions[:4], ["0.00", "0.67", "1.33", "2.00"])
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 30, positions=positions, SliceThickness="0.666667")
+            self.assert_left_exactly_as_read(Path(tmp) / "in")
+
+    def test_rounded_positions_with_a_wrong_header_get_their_fitted_spacing(self):
+        # The median gap of these positions is 0.67 mm; over 30 slices that would
+        # put the last one 0.1 mm off. The fitted step is 2/3 mm.
+        positions = [f"{index * 2 / 3:.2f}" for index in range(30)]
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 30, positions=positions, SliceThickness=1.0)
+            series, printed = self.check(Path(tmp) / "in")
+            self.assertAlmostEqual(float(series.spacing[0]), 2 / 3, delta=1e-4)
+            self.assert_printed_spacings(printed, 1.0, 2 / 3, delta=1e-4)
+
+    def test_other_folder_contents_do_not_change_the_slice_count(self):
+        # A DICOMDIR-like object without pixels, a text file, and a sub-folder
+        # holding some of the slices: imagedata reads the six slices, and so
+        # does the header count.
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "in"
+            slices = write_stack(directory, 6, step=1.2, SliceThickness=1.2)
+            (directory / "sub").mkdir()
+            for _, _, path in slices[::2]:
+                shutil.move(str(path), str(directory / "sub" / path.name))
+            (directory / "notes.txt").write_text("not DICOM")
+            (directory / "sub" / "notes.txt").write_text("not DICOM")
+            meta = pydicom.dataset.FileMetaDataset()
+            meta.MediaStorageSOPClassUID = "1.2.840.10008.1.3.10"   # Media Storage Directory
+            meta.MediaStorageSOPInstanceUID = "1.2.3.99"
+            meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+            dicomdir = pydicom.dataset.FileDataset(str(directory / "DICOMDIR"), {},
+                                                   file_meta=meta, preamble=b"\0" * 128)
+            dicomdir.FileSetID = "SYNTHETIC"
+            dicomdir.save_as(directory / "DICOMDIR", enforce_file_format=True)
+            self.assertEqual(dicom_io.read_series(directory).slices, 6)
+            self.assert_left_exactly_as_read(directory)
+
+    def test_near_duplicate_last_position_is_refused(self):
+        # imagedata accepts this stack: the last gap is smaller than the first one.
+        positions = [f"{index}" for index in range(9)] + ["8.005"]
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 10, positions=positions, SliceThickness=1.0)
+            series = dicom_io.read_series(Path(tmp) / "in")
+            self.assertEqual(series.slices, 10)
+            with self.assertRaisesRegex(ValueError, r"not evenly spaced.* 0\.005 .* 1(\.0+)? mm"):
+                dicom_io.check_slice_stack(series, Path(tmp) / "in")
+
+    def test_single_slice_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 1, SliceThickness=3.0)
+            series = dicom_io.read_series(Path(tmp) / "in")
+            before = np.array(series.spacing)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                dicom_io.check_slice_stack(series, Path(tmp) / "in")
+            self.assertEqual(np.array(series.spacing).tobytes(), before.tobytes())
+            self.assertEqual(output.getvalue(), "")
+
+    def test_missing_second_slice_is_refused(self):
+        # imagedata accepts this stack: only a gap larger than the first one fails there.
+        with tempfile.TemporaryDirectory() as tmp:
+            write_stack(Path(tmp) / "in", 10, skip=(1,), SliceThickness=1.0)
+            series = dicom_io.read_series(Path(tmp) / "in")
+            self.assertEqual(series.slices, 9)
+            with self.assertRaisesRegex(ValueError, r"not evenly spaced.* 1(\.0+)? .* 2(\.0+)? mm"):
+                dicom_io.check_slice_stack(series, Path(tmp) / "in")
+
+    def test_undecodable_last_slice_is_refused(self):
+        # imagedata skips a file whose pixels it cannot decode.
+        with tempfile.TemporaryDirectory() as tmp:
+            slices = write_stack(Path(tmp) / "in", 10, SliceThickness=1.0)
+            last = pydicom.dcmread(str(slices[-1][2]))
+            last.PixelData = last.PixelData[:len(last.PixelData) // 2]
+            last.save_as(str(slices[-1][2]))
+            series = dicom_io.read_series(Path(tmp) / "in")
+            self.assertEqual(series.slices, 9)
+            with self.assertRaisesRegex(ValueError, r"\b10\b.*\b9\b"):
+                dicom_io.check_slice_stack(series, Path(tmp) / "in")
 
 
 @requires_dicom_fixture

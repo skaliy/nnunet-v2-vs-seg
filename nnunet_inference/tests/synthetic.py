@@ -8,7 +8,8 @@ from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage
 
 def write_image(path, index, *, study_uid="1.2.3", series_uid="1.2.3.4",
                 sop_uid=None, orientation=(1, 0, 0, 0, 1, 0),
-                pixel_spacing=(1, 1), position=None, pixels=None):
+                pixel_spacing=(1, 1), position=None, pixels=None, **tags):
+    """Write one MR slice; `tags` adds or overrides header elements by keyword."""
     pixels = np.zeros((2, 3), dtype=np.uint16) if pixels is None else np.asarray(pixels, dtype="<u2")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -18,7 +19,7 @@ def write_image(path, index, *, study_uid="1.2.3", series_uid="1.2.3.4",
     meta.MediaStorageSOPInstanceUID = sop_uid
     meta.TransferSyntaxUID = ExplicitVRLittleEndian
     d = FileDataset(str(path), {}, file_meta=meta, preamble=b"\0" * 128)
-    for key, value in dict(SOPClassUID=MRImageStorage, SOPInstanceUID=sop_uid,
+    for key, value in (dict(SOPClassUID=MRImageStorage, SOPInstanceUID=sop_uid,
                            StudyInstanceUID=study_uid, SeriesInstanceUID=series_uid,
                            FrameOfReferenceUID="1.2.3.5", Modality="MR",
                            PatientID="SYNTHETIC", PatientName="Synthetic^Test",
@@ -29,7 +30,7 @@ def write_image(path, index, *, study_uid="1.2.3", series_uid="1.2.3.4",
                            ImagePositionPatient=list((0, 0, index) if position is None else position),
                            SamplesPerPixel=1, PhotometricInterpretation="MONOCHROME2",
                            BitsAllocated=16, BitsStored=16, HighBit=15,
-                           PixelRepresentation=0, PixelData=pixels.tobytes()).items():
+                           PixelRepresentation=0, PixelData=pixels.tobytes()) | tags).items():
         setattr(d, key, value)
     d.save_as(path, enforce_file_format=True)
     return path

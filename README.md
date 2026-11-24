@@ -69,23 +69,25 @@ cp "$nnUNet_raw/$DATASET/splits_final.json" \
 ```
 
 `largest-component` removes disconnected label blobs; use `binary` to retain
-all foreground components. The preparation script refuses to overwrite an
-existing dataset.
+all foreground components. The preparation script refuses a dataset ID that
+already has a folder in `nnUNet_raw`, `nnUNet_preprocessed` or `nnUNet_results`.
 
 ## Train and evaluate five folds
 
 ```bash
 for fold in 0 1 2 3 4; do
-    nnUNetv2_train "$DATASET_ID" 3d_fullres "$fold" \
-        -p nnUNetResEncUNetLPlans --npz
+    nnUNetv2_train "$DATASET_ID" 3d_fullres "$fold" -p nnUNetResEncUNetLPlans
 done
 
 python training/evaluate_cv.py --dataset "$DATASET"
 ```
 
 Evaluation writes per-case and summary CSV files to `cv_metrics/` in the
-trained model directory. It uses the installed fastMONAI package and stops when
-a fold's predictions are not exactly its validation cases in `splits_final.json`.
+trained model directory, and refuses to replace existing ones unless given
+`--overwrite`; use `--output-dir` for another folder. The summary gives the
+mean and the sample standard deviation of each metric. Evaluation uses the
+installed fastMONAI package and stops when a fold's predictions are not exactly
+its validation cases in `splits_final.json`.
 
 `fold=all` trains one model on all cases; it is not cross-validation. Use
 `--c` to continue an interrupted fold.

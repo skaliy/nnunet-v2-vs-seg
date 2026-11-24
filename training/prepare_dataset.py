@@ -4,8 +4,8 @@
 Relative image and mask paths are resolved from ``--source-root``. By default,
 indexes stored in a ``data/`` directory resolve from its project parent; other
 indexes resolve from the directory containing the CSV. Images must be
-``.nii.gz`` files on the same grid as their masks. The destination must not
-already exist.
+``.nii.gz`` files on the same grid as their masks. The dataset ID must not be
+in use in nnUNet_raw, nnUNet_preprocessed or nnUNet_results.
 """
 
 from __future__ import annotations
@@ -30,6 +30,8 @@ from scipy.ndimage import label
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_COLUMNS = {"case_id", "t1_img_path", "t1_seg_path", "fold"}
+# Read as written: type inference would turn the case ID 001 into 1.
+TEXT_COLUMNS = {"case_id": str, "t1_img_path": str, "t1_seg_path": str}
 DATASET_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]*$")
 # nnU-Net pairs image and mask voxels by array index and ignores the header.
 # Corner voxels further apart than this, in voxels, mean the mask belongs to
@@ -96,6 +98,19 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def datasets_with_id(dataset_id: int, folders: list[Path]) -> list[Path]:
+    """Dataset folders that use this ID. nnU-Net finds a dataset by its ID in
+    raw, preprocessed and results, so an ID in any of them is in use."""
+    prefix = f"Dataset{dataset_id:03d}_"
+    return sorted(
+        path
+        for folder in dict.fromkeys(folders)
+        if folder.is_dir()
+        for path in folder.iterdir()
+        if path.is_dir() and path.name.startswith(prefix)
+    )
+
+
 def _default_source_root(data_csv: Path) -> Path:
     return data_csv.parent.parent if data_csv.parent.name == "data" else data_csv.parent
 
@@ -145,14 +160,14 @@ def load_cases(data_csv: Path, source_root: Path) -> list[Case]:
 
     if not data_csv.is_file():
         raise FileNotFoundError(f"Dataset CSV not found: {data_csv}")
-    frame = pd.read_csv(data_csv)
+    frame = pd.read_csv(data_csv, dtype=TEXT_COLUMNS)
     missing_columns = sorted(REQUIRED_COLUMNS - set(frame.columns))
     if missing_columns:
         raise ValueError(f"Dataset CSV is missing columns: {missing_columns}")
     if frame[list(REQUIRED_COLUMNS)].isna().any().any():
         raise ValueError("case_id, image path, mask path, and fold must all be present")
 
-    case_ids = frame["case_id"].astype(str)
+    case_ids = frame["case_id"].astype(str).str.strip()
     if case_ids.duplicated().any():
         duplicates = sorted(case_ids[case_ids.duplicated(keep=False)].unique())
         raise ValueError(f"Duplicate case_id values: {duplicates[:10]}")
@@ -181,6 +196,18 @@ def load_cases(data_csv: Path, source_root: Path) -> list[Case]:
         raise FileNotFoundError(
             f"Missing source files ({len(missing_files)} total; first 10):\n  {shown}"
         )
+    # A scan listed under two case IDs could be trained on and validated on.
+    for kind, attribute in (("image", "image_path"), ("mask", "mask_path")):
+        owners: dict[Path, list[str]] = {}
+        for case in cases:
+            owners.setdefault(getattr(case, attribute), []).append(case.case_id)
+        shared = [f"{path}: {', '.join(ids)}" for path, ids in owners.items() if len(ids) > 1]
+        if shared:
+            shown = "\n  ".join(shared[:10])
+            raise ValueError(
+                f"The same {kind} file is listed for more than one case "
+                f"({len(shared)} files; first 10):\n  {shown}"
+            )
     # Images are linked into the dataset under a .nii.gz name, not converted.
     other_endings = [case.image_path for case in cases if not case.image_path.name.endswith(".nii.gz")]
     if other_endings:
@@ -202,8 +229,14 @@ def load_cases(data_csv: Path, source_root: Path) -> list[Case]:
             f"their header (corner voxels up to {max(shifts):.2f} voxels apart; "
             f"the limit is {MAX_CORNER_SHIFT})"
         )
-    if len(set(case.fold for case in cases)) < 2:
+    folds = sorted(set(case.fold for case in cases))
+    if len(folds) < 2:
         raise ValueError("At least two folds are required to create cross-validation splits")
+    if len(folds) != 5:
+        print(
+            f"Note: the index has {len(folds)} folds; only nnU-Net folds 0-{len(folds) - 1} "
+            "exist (nnU-Net would train any further fold on a random split)"
+        )
     return cases
 
 
@@ -327,8 +360,8 @@ def build_dataset(
         raise
 
 
-def main() -> int:
-    args = _parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
     if not 1 <= args.dataset_id <= 999:
         raise SystemExit("--dataset-id must be between 1 and 999")
     if not DATASET_NAME_PATTERN.fullmatch(args.dataset_name):
@@ -353,6 +386,20 @@ def main() -> int:
     )
     folder_name = f"Dataset{args.dataset_id:03d}_{args.dataset_name}"
     destination = nnunet_raw / folder_name
+    # The workspace next to raw, and the one nnU-Net's variables name unless
+    # --nnunet-raw chose another raw folder.
+    workspace = [nnunet_raw, nnunet_raw.parent / "nnUNet_preprocessed",
+                 nnunet_raw.parent / "nnUNet_results"]
+    if args.nnunet_raw is None:
+        workspace += [Path(os.environ[variable]).expanduser().resolve()
+                      for variable in ("nnUNet_preprocessed", "nnUNet_results")
+                      if os.environ.get(variable)]
+    in_use = datasets_with_id(args.dataset_id, workspace)
+    if in_use:
+        raise SystemExit(
+            f"Dataset ID {args.dataset_id} is already in use: {', '.join(map(str, in_use))}. "
+            "Choose another --dataset-id."
+        )
 
     cases = load_cases(data_csv, source_root)
     splits = make_splits(cases)

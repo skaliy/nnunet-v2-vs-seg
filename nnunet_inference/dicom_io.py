@@ -17,6 +17,7 @@ import numpy as np
 import SimpleITK as sitk
 from imagedata.series import Series
 from pydicom import dcmread
+from pydicom.misc import is_dicom
 from pydicom.uid import UID
 
 SLICE_TOLERANCE = 1e-2
@@ -52,6 +53,52 @@ VOTE_MAP_BLUE = 32768
 def read_series(input_dir):
     """Read a single DICOM series as an imagedata Series (z, y, x)."""
     return Series(str(input_dir), opts={"slice_tolerance": SLICE_TOLERANCE})
+
+
+def check_slice_stack(series, input_dir):
+    """Refuse an incomplete or unevenly spaced stack; take the spacing from the positions.
+
+    imagedata silently skips a file whose pixels it cannot decode, accepts a
+    stack whose first gap is larger than the others, and takes the slice
+    spacing from SpacingBetweenSlices or SliceThickness instead of the slice
+    positions. The image slices are counted from their headers (DICOM files
+    with ImagePositionPatient and Rows). Every position must lie within
+    SLICE_TOLERANCE of the evenly spaced line fitted through them all; positions
+    rounded to two decimals still do, although their gaps differ by 0.01 mm. A
+    header slice spacing of zero or less is refused, not corrected. A regular
+    stack whose spacing already matches its positions is not touched.
+    """
+    headers = []
+    for path in Path(input_dir).rglob("*"):
+        if path.is_file() and is_dicom(path):
+            dataset = dcmread(str(path), stop_before_pixels=True)
+            if hasattr(dataset, "ImagePositionPatient") and hasattr(dataset, "Rows"):
+                headers.append(dataset)
+    if series.slices != len(headers):
+        raise ValueError(f"The input folder holds {len(headers)} image slices, "
+                         f"but imagedata read {series.slices}")
+    if len(headers) < 2:
+        return
+    orientation = np.asarray(headers[0].ImageOrientationPatient, dtype=float)
+    normal = np.cross(orientation[:3], orientation[3:])
+    positions = np.sort([np.dot(np.asarray(d.ImagePositionPatient, dtype=float), normal)
+                         for d in headers])
+    gaps = np.diff(positions)
+    index = np.arange(len(positions))
+    step, first = np.polyfit(index, positions, 1)
+    if np.abs(positions - (first + index * step)).max() > SLICE_TOLERANCE:
+        raise ValueError(f"The input slices are not evenly spaced: gaps from "
+                         f"{gaps.min():.6g} to {gaps.max():.6g} mm")
+    step = float(step)
+    spacing = np.asarray(series.spacing, dtype=float)
+    if spacing[0] <= 0:
+        # Such a stack failed at the NIfTI step before this check existed.
+        raise ValueError(f"The slice spacing in the header is not positive: "
+                         f"{spacing[0]:.6g} mm")
+    if abs(step - spacing[0]) > SLICE_TOLERANCE:
+        print(f"  slice spacing {spacing[0]:.6g} mm from the header does not match "
+              f"the slice positions; using their spacing, {step:.6g} mm")
+        series.spacing = (step, spacing[1], spacing[2])
 
 
 def get_orientation(nifti_path):
@@ -237,6 +284,16 @@ def _write_dicom_from_nifti(nifti_path, template_dir, out_dir, output_kind,
     arr = np.asarray(Series(str(nifti_path)))
     voxels = to_voxels(arr)
     template = read_series(template_dir)
+    if template.dtype != np.uint16:
+        # imagedata reads a rescaled source as float and a signed one as int16,
+        # and would then rescale or wrap what we write. Both outputs are stored
+        # unsigned 16-bit. The copy gets a new series UID from imagedata, and
+        # imagedata 3.9.7 leaves out the SOP UIDs (3.9.6 keeps them). Set both
+        # from the source: the output UIDs are derived from them.
+        source = template
+        template = source.astype(np.uint16)
+        template.seriesInstanceUID = source.seriesInstanceUID
+        template.SOPInstanceUIDs = dict(source.SOPInstanceUIDs)
     if software_versions:
         template.setDicomAttribute("SoftwareVersions", list(software_versions))
     marker = "MASK" if output_kind == "segmentation" else "PROBABILITY"
