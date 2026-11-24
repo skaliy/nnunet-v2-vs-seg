@@ -18,13 +18,10 @@ python -m pip install \
     pydicom==3.0.2 numpy==2.2.6 pandas scipy nibabel
 ```
 
-Cross-validation evaluation uses fastMONAI's VS metrics. Install the tested
-revision next to this repository:
+Cross-validation evaluation uses fastMONAI's metrics. Install the tested release:
 
 ```bash
-git clone https://github.com/MMIV-ML/fastMONAI.git ../fastMONAI
-git -C ../fastMONAI checkout 3d2fad0186f7fd5f20706faa3a9b0399c2fc0c4a
-python -m pip install -e ../fastMONAI
+python -m pip install fastMONAI==0.14.0
 ```
 
 ```bash
