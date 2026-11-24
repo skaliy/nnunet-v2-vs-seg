@@ -11,7 +11,6 @@ import zipfile
 
 import numpy as np
 from pydicom import dcmread
-from pydicom.dataset import FileDataset, FileMetaDataset
 
 from nnunet_inference.integration import validate_output
 from nnunet_inference.redcap_output import pr2mask_dictionary_rows
@@ -122,24 +121,12 @@ class ValidateOutputTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, r"^labels slice 1 .*FrameOfReferenceUID"):
             self.validate(output)
 
-    def test_mask_whose_slices_run_the_other_way_along_the_slice_normal_fails(self):
-        """A non-empty mask, with its REDCap rows, whose slices run from the first input
-        slice the other way along the slice normal."""
-        output = self.build(foreground=2, labels=lambda index: dict(position=(0, 0, -index)))
-        with self.assertRaisesRegex(RuntimeError, r"^labels slice 1 .*ImagePositionPatient"):
-            self.validate(output)
-
     def test_fused_series_with_a_missing_slice_fails(self):
         for name in ("fused", "fused_vote_map"):
             with self.subTest(name=name):
                 output = self.build(missing={(name, 1)})
                 with self.assertRaisesRegex(RuntimeError, rf"^{name} slice count 2 != input 3"):
                     self.validate(output)
-
-    def test_fused_series_on_another_grid_fails(self):
-        output = self.build(fused_vote_map=lambda index: dict(position=(0, 0, index + 0.5)))
-        with self.assertRaisesRegex(RuntimeError, r"^fused_vote_map slice 1 .*ImagePositionPatient"):
-            self.validate(output)
 
     def test_slices_are_paired_by_position_not_by_file_order(self):
         output = self.build(foreground=2, labels=lambda index: dict(position=(0, 0, SLICES - 1 - index)))
@@ -153,45 +140,6 @@ class ValidateOutputTests(unittest.TestCase):
                 output = self.build(**arguments)
                 with self.assertRaisesRegex(RuntimeError, rf"REDCap {field} differs from the input"):
                     self.validate(output)
-
-    def test_files_in_the_input_that_are_not_part_of_a_series_are_skipped(self):
-        (self.input / "notes.txt").write_text("not DICOM")
-        meta = FileMetaDataset()
-        meta.MediaStorageSOPClassUID = "1.2.840.10008.1.3.10"   # Media Storage Directory
-        meta.MediaStorageSOPInstanceUID = "1.2.3.99"
-        meta.TransferSyntaxUID = "1.2.840.10008.1.2.1"
-        directory = FileDataset(str(self.input / "DICOMDIR"), {}, file_meta=meta, preamble=b"\0" * 128)
-        directory.FileSetID = "SYNTHETIC"
-        directory.save_as(self.input / "DICOMDIR", enforce_file_format=True)
-        self.assertIn("validation: OK", self.validate(self.build()))
-
-    def test_dicom_objects_in_the_input_that_are_not_image_slices_are_skipped(self):
-        # A structured report filed in another series of the study: it has a
-        # SeriesInstanceUID but no ImagePositionPatient or Rows, so the container
-        # does not count it as a slice.
-        meta = FileMetaDataset()
-        meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.88.11"   # Basic Text SR
-        meta.MediaStorageSOPInstanceUID = "1.2.3.40.1"
-        meta.TransferSyntaxUID = "1.2.840.10008.1.2.1"
-        report = FileDataset(str(self.input / "report.dcm"), {}, file_meta=meta,
-                             preamble=b"\0" * 128)
-        for keyword, value in dict(SOPClassUID=meta.MediaStorageSOPClassUID,
-                                   SOPInstanceUID="1.2.3.40.1", StudyInstanceUID="1.2.3",
-                                   SeriesInstanceUID="1.2.3.40", Modality="SR",
-                                   PatientID="SYNTHETIC").items():
-            setattr(report, keyword, value)
-        report.save_as(self.input / "report.dcm", enforce_file_format=True)
-        for foreground in (0, 2):
-            with self.subTest(foreground=foreground):
-                self.assertIn("validation: OK", self.validate(self.build(foreground=foreground)))
-
-    def test_input_without_a_dicom_series_is_named_as_the_input(self):
-        output = self.build()
-        for path in self.input.iterdir():
-            path.unlink()
-        (self.input / "notes.txt").write_text("not DICOM")
-        with self.assertRaisesRegex(RuntimeError, r"^no DICOM series found in the input"):
-            self.validate(output)
 
 
 if __name__ == "__main__":

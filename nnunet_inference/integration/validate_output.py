@@ -11,7 +11,6 @@ import zipfile
 
 import numpy as np
 from pydicom import dcmread
-from pydicom.misc import is_dicom
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from nnunet_inference.integration.dicom_checks import check_derived_identity
@@ -31,23 +30,16 @@ def _dicom_files(directory):
     return files
 
 
-def _read_input(directory):
-    """The input series: its image slices, DICOM files with a SeriesInstanceUID,
-    ImagePositionPatient and Rows. Other files (notes, a DICOMDIR, a structured
-    report) are skipped, as the container skips them."""
+def _read_series(directory, *, validate_derived):
     datasets = []
-    for path in sorted(path for path in Path(directory).rglob("*") if path.is_file()):
-        if not is_dicom(path):
-            continue
+    for path in _dicom_files(directory):
         try:
             dataset = dcmread(str(path))
         except Exception as exc:
-            raise RuntimeError(f"cannot read DICOM input {path}: {exc}") from exc
-        if all(keyword in dataset for keyword in
-               ("SeriesInstanceUID", "ImagePositionPatient", "Rows")):
-            datasets.append(dataset)
-    if not datasets:
-        raise RuntimeError(f"no DICOM series found in the input {directory}")
+            raise RuntimeError(f"cannot read DICOM output {path}: {exc}") from exc
+        if validate_derived:
+            check_derived_identity(dataset, path)
+        datasets.append(dataset)
     return datasets
 
 
@@ -96,20 +88,8 @@ def _redcap_destination(source):
                 redcap_event_name=event.removeprefix("EventName:"))
 
 
-def _read_output(directory):
-    datasets = []
-    for path in _dicom_files(directory):
-        try:
-            dataset = dcmread(str(path))
-        except Exception as exc:
-            raise RuntimeError(f"cannot read DICOM output {path}: {exc}") from exc
-        check_derived_identity(dataset, path)
-        datasets.append(dataset)
-    return datasets
-
-
 def validate(input_dir, output_dir):
-    source = _read_input(input_dir)
+    source = _read_series(input_dir, validate_derived=False)
     source_series = {str(dataset.SeriesInstanceUID) for dataset in source}
     source_sops = {str(dataset.SOPInstanceUID) for dataset in source}
     source_studies = {str(dataset.StudyInstanceUID) for dataset in source}
@@ -125,7 +105,7 @@ def validate(input_dir, output_dir):
             continue
         if name == "reports" and not any(directory.rglob("*")):
             continue
-        datasets = _read_output(directory)
+        datasets = _read_series(directory, validate_derived=True)
         by_name[name] = datasets
         series = {str(dataset.SeriesInstanceUID) for dataset in datasets}
         sops = [str(dataset.SOPInstanceUID) for dataset in datasets]
