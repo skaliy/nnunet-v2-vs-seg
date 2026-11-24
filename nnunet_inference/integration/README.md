@@ -29,6 +29,7 @@ python -m unittest discover -s nnunet_inference/tests -p 'test_*.py' -v
 bash -n nnunet_inference/integration/build.sh
 bash -n nnunet_inference/integration/entrypoint.sh
 bash -n nnunet_inference/integration/smoke-test.sh
+bash -n nnunet_inference/integration/release-regression.sh
 cd nnunet_inference/integration
 ./build.sh --stage-only
 ./build.sh --build
@@ -179,6 +180,43 @@ The helper caps affinity to 16 logical CPUs and compares all five folds by
 default. Add `--folds 0,1` for a smaller diagnostic regression or `--tta false`
 to run only the non-TTA condition. Completed production qualification should
 record the full five-fold results.
+
+### Regression against a release
+
+`release-regression.sh` checks that a new build gives the same outputs as a released
+image on one DICOM series:
+
+```bash
+./release-regression.sh nnunet-vsseg:<RELEASE> nnunet-vsseg-check:<RELEASE> \
+    /path/to/test-dicom /path/to/work-dir
+```
+
+It runs the release twice and the candidate once, with TTA on and then off (six runs).
+`compare_outputs.py` keeps what the two release runs agree on: pixel data, every DICOM
+element including the file meta, every column of every REDCap row and the number of rows,
+the data dictionary, and the content of every other file. The candidate must match all of
+it and must not write a file, DICOM element, REDCap row or column or dictionary member
+that the release runs did not write. Entries on which the two release runs disagree, such
+as times, may have any value, but the candidate must have those that both runs had.
+Memory addresses that pr2mask prints, as in `ImageRegion (0x7628...)`, are not compared,
+and `pacs_command.log` holds timings, so only its presence is. If the release runs
+disagree on the mask pixels, the script stops before the candidate runs; if they disagree
+on the pixels of another output, those pixels are not compared, and the lines after the
+result say which and how many.
+
+Build the candidate with the release's `VERSION` under another `IMAGE_NAME`, on the
+release's Fiona base (`FIONA_BASE=haukebartsch/fiona-component-python@sha256:<digest>`).
+The script reads the release's `CONTAINER_VERSION` from its image configuration and gives
+it to the candidate for the run, so the image name is not a difference. Each run is
+started by image ID, so a tag moved meanwhile changes nothing.
+
+Relative paths are resolved from the current directory. The snapshots and REDCap files in
+the work directory hold patient identifiers, so it must lie outside the repository or in
+a folder that Git ignores, such as `nnUNet_data/`; the script refuses any other. A work
+directory belongs to the series of its first run: `input-series.txt` records its path and
+a SHA-256 over its files, and another series is refused. Finished runs in the work
+directory are reused for the same image ID, so a rebuilt candidate is run again. The date
+is drawn into the fused images, so use a new work directory each day.
 
 `--save` writes `release_packages/<VERSION>/` with the Docker archive, a short README
 (`release.py`: load, image ID, run, REDCap) and `ror_select_entry.txt`. Don't add a

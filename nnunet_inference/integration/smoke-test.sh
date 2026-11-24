@@ -15,10 +15,16 @@ mkdir -p "${OUTPUT_DIR}"
 if [ -n "$(find "${OUTPUT_DIR}" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
     echo 'Error: output directory must be empty' >&2; exit 2
 fi
+# A regression run gives the candidate the reference's name, so that the name
+# does not show up as a difference in SoftwareVersions and model_version.
+identity=()
+if [ -n "${CONTAINER_VERSION_OVERRIDE:-}" ]; then
+    identity=(-e "CONTAINER_VERSION=${CONTAINER_VERSION_OVERRIDE}")
+fi
 CPUSET="${CPUSET:-$("${PYTHON_BIN}" -c 'import os; ids=sorted(os.sched_getaffinity(0))[:16]; assert len(ids)==16, "16 available CPUs required"; print(",".join(map(str,ids)))')}"
 docker run --rm --network none --cpus 16 --cpuset-cpus "${CPUSET}" \
     --memory 64g --memory-swap 64g \
-    -e "ROR_CONT_OPTIONS={\"tta\":${TTA}}" \
+    -e "ROR_CONT_OPTIONS={\"tta\":${TTA}}" ${identity[@]+"${identity[@]}"} \
     -v "$(realpath "${INPUT_DIR}"):/data/input:ro" \
     -v "$(realpath "${OUTPUT_DIR}"):/output" "${IMAGE_TAG}"
 PYTHONPATH="$(cd ../.. && pwd)" "${PYTHON_BIN}" validate_output.py "${INPUT_DIR}" "${OUTPUT_DIR}"
