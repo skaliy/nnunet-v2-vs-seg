@@ -33,6 +33,8 @@ class VersionPinTests(unittest.TestCase):
         self.assertEqual(set(self.container) - set(self.project), {"torch"})
 
     def test_readme_install_command_equals_the_project_pins(self):
+        # fastMONAI is installed apart from the project, for the evaluation only.
+        self.readme.pop("fastMONAI", None)
         self.assertEqual(self.readme, self.project)
 
 
