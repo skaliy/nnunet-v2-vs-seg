@@ -27,6 +27,8 @@ jobs:
         run: |
           for script in nnunet_inference/integration/*.sh; do bash -n "$script"; done
       - name: Unit tests
-        run: python -m unittest discover -s nnunet_inference/tests -p 'test_*.py' -v
+        run: |
+          python -m unittest discover -s nnunet_inference/tests -p 'test_*.py' -v
+          python -m unittest discover -s tests -p 'test_*.py' -v
       - name: VS workstation checks (skipped here; catches import errors)
         run: python -m unittest discover -s projects/vs/checks -p 'test_*.py' -v

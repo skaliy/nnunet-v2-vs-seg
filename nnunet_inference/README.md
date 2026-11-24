@@ -35,21 +35,24 @@ settings.
 - `pipeline.py`: command-line interface and DICOM-to-model orchestration
 - `predictor.py`: device, fold, model loading, and one-case nnU-Net prediction
 - `dicom_io.py`: orientation, resampling, DICOM writing, and UID provenance
-- `tests/`: unit tests and optional real-DICOM validation
+- `tests/`: unit tests
 - `parallel.py`: CPU fold workers and native ordered logit averaging
+- `cpu.py`: the CPU and memory numbers of the packaged model
 - `deployment.py`: inference-only ResEnc-L bundle staging and integrity checks
 - `pacs.py`: PACS/pr2mask orchestration and protected output publication
 - `redcap_output.py`: pr2mask's REDCap rows, one instance per region in the model's block
-- `integration/`: Research PACS build, release export and qualification
+- `integration/`: Research PACS build, release export, qualification and
+  optional real-DICOM validation
 
 ## Verify
 
 ```bash
 python -m unittest discover -s nnunet_inference/tests -p 'test_*.py' -v
+python -m unittest discover -s tests -p 'test_*.py' -v
 
 NNUNET_DICOM_FIXTURE=/path/to/dicom \
 NNUNET_MODEL_DIR=/path/to/trained-model \
-    python -m nnunet_inference.tests.validate_dicom
+    python -m nnunet_inference.integration.validate_dicom
 ```
 
 Medical images and models are intentionally excluded from Git. See

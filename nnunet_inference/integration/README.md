@@ -26,6 +26,7 @@ From the repository root, run:
 
 ```bash
 python -m unittest discover -s nnunet_inference/tests -p 'test_*.py' -v
+python -m unittest discover -s tests -p 'test_*.py' -v
 bash -n nnunet_inference/integration/build.sh
 bash -n nnunet_inference/integration/entrypoint.sh
 bash -n nnunet_inference/integration/smoke-test.sh
@@ -102,7 +103,10 @@ types, string/numeric TTA values and non-objects such as `""` are rejected befor
 inference; the error prints the value it received.
 
 The container returns `labels`, `fused`, `fused_vote_map`, `reports`, `redcap`,
-`pacs_command.log` and `runtime_resources.json`. The nnU-Net `mask` and `vote_map`
+`pacs_command.log` and `runtime_resources.json`. The five product folders and the log are
+first written to a hidden folder `.nnunet-publishing-*` inside `/output` and then renamed
+into place, so a product folder that is visible is complete; such a hidden folder left
+behind means the run was killed during publication. The nnU-Net `mask` and `vote_map`
 series are intermediate pr2mask inputs. pr2mask writes its own mask series to
 `labels/`, using its folder layout; nnU-Net provenance (SeriesDescription,
 SoftwareVersions, DerivationDescription and a `MASK` ImageType value) is copied

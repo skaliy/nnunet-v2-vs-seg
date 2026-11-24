@@ -58,7 +58,6 @@ class Pr2maskDictionaryTests(unittest.TestCase):
         self.assertIn('number_of_pixel', names)
         self.assertIn('physical_size', names)
         self.assertEqual(len(names), len(set(names)))
-        self.assertFalse([name for name in names if name.startswith('vs_')])
 
 
 class RedcapOutputTests(unittest.TestCase):

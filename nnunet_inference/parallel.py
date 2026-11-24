@@ -9,13 +9,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
-THREADS_PER_FOLD = 3
-CPU_BUDGET = 16
+from .cpu import MAX_THREADS, THREADS_PER_FOLD, set_thread_environment
 
 
 def assign_worker_cpus(count, available=None):
     available = sorted(os.sched_getaffinity(0) if available is None else available)
-    available = available[:CPU_BUDGET]
+    available = available[:MAX_THREADS]
     required = count * THREADS_PER_FOLD
     if len(available) < required:
         raise RuntimeError(f"{count} folds require {required} available CPU threads; "
@@ -104,11 +103,7 @@ class ParallelFoldMixin:
         decoder_lock = context.Lock()
         # Children import torch before entering the worker. Bound those imports
         # as well; large tensors never travel through a Queue or /dev/shm.
-        for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
-                     "NUMEXPR_NUM_THREADS", "ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"):
-            os.environ[name] = str(THREADS_PER_FOLD)
-        os.environ["nnUNet_def_n_proc"] = str(THREADS_PER_FOLD)
-        os.environ["nnUNet_compile"] = "false"
+        set_thread_environment()
         with tempfile.TemporaryDirectory(prefix="nnunet-folds-") as directory:
             root = Path(directory)
             input_path = root / "input.npy"

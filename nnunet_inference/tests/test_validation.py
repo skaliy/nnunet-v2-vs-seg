@@ -11,7 +11,7 @@ import numpy as np
 import SimpleITK as sitk
 
 from nnunet_inference import dicom_io
-from nnunet_inference.tests import validate_dicom
+from nnunet_inference.integration import validate_dicom
 from nnunet_inference.tests.synthetic import write_image
 
 

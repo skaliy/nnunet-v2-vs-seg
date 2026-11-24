@@ -3,14 +3,16 @@
 
 Relative image and mask paths are resolved from ``--source-root``. By default,
 indexes stored in a ``data/`` directory resolve from its project parent; other
-indexes resolve from the directory containing the CSV. The destination
-must not already exist.
+indexes resolve from the directory containing the CSV. Images must be
+``.nii.gz`` files on the same grid as their masks. The destination must not
+already exist.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import itertools
 import json
 import os
 import re
@@ -29,6 +31,10 @@ from scipy.ndimage import label
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_COLUMNS = {"case_id", "t1_img_path", "t1_seg_path", "fold"}
 DATASET_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]*$")
+# nnU-Net pairs image and mask voxels by array index and ignores the header.
+# Corner voxels further apart than this, in voxels, mean the mask belongs to
+# another grid. Smaller differences come from rounding in the headers.
+MAX_CORNER_SHIFT = 0.5
 
 
 @dataclass(frozen=True)
@@ -99,6 +105,41 @@ def _resolve_source(value: str, source_root: Path) -> Path:
     return path.resolve() if path.is_absolute() else (source_root / path).resolve()
 
 
+def _grid(path: Path) -> tuple[tuple, tuple, tuple, tuple]:
+    """Size, spacing, origin and direction from the file header."""
+    reader = sitk.ImageFileReader()
+    reader.SetFileName(str(path))
+    reader.ReadImageInformation()
+    return reader.GetSize(), reader.GetSpacing(), reader.GetOrigin(), reader.GetDirection()
+
+
+def _corners(size, spacing, origin, direction) -> np.ndarray:
+    """Physical positions of the corner voxels."""
+    dimension = len(size)
+    indices = np.array(list(itertools.product(*[(0, n - 1) for n in size])), dtype=float)
+    axes = np.asarray(direction, dtype=float).reshape(dimension, dimension)
+    return np.asarray(origin) + (indices * np.asarray(spacing)) @ axes.T
+
+
+def grid_mismatch(image_path: Path, mask_path: Path) -> tuple[str | None, float]:
+    """Why the mask is not on the image grid (or None), and the corner shift.
+
+    Size and spacing must agree as in nnU-Net's dataset integrity check. Origin
+    and direction are judged by their effect: the largest distance between
+    matching corner voxels, in voxels of the smallest spacing.
+    """
+    image, mask = _grid(image_path), _grid(mask_path)
+    if image[0] != mask[0]:
+        return f"size {mask[0]} in the mask, {image[0]} in the image", float("inf")
+    if not np.allclose(image[1], mask[1]):
+        return f"spacing {mask[1]} in the mask, {image[1]} in the image", float("inf")
+    distances = np.linalg.norm(_corners(*image) - _corners(*mask), axis=1)
+    shift = float(distances.max() / min(image[1]))
+    if shift > MAX_CORNER_SHIFT:
+        return f"corner voxels are {shift:.2f} voxels apart", shift
+    return None, shift
+
+
 def load_cases(data_csv: Path, source_root: Path) -> list[Case]:
     """Load and fully validate the dataset index before any output is written."""
 
@@ -139,6 +180,27 @@ def load_cases(data_csv: Path, source_root: Path) -> list[Case]:
         shown = "\n  ".join(map(str, missing_files[:10]))
         raise FileNotFoundError(
             f"Missing source files ({len(missing_files)} total; first 10):\n  {shown}"
+        )
+    # Images are linked into the dataset under a .nii.gz name, not converted.
+    other_endings = [case.image_path for case in cases if not case.image_path.name.endswith(".nii.gz")]
+    if other_endings:
+        shown = "\n  ".join(map(str, other_endings[:10]))
+        raise ValueError(
+            f"Images must be .nii.gz files ({len(other_endings)} are not; first 10):\n  {shown}"
+        )
+    mismatches = [grid_mismatch(case.image_path, case.mask_path) for case in cases]
+    off_grid = [f"{case.case_id}: {error}" for case, (error, _) in zip(cases, mismatches) if error]
+    if off_grid:
+        shown = "\n  ".join(off_grid[:10])
+        raise ValueError(
+            f"Image and mask are not on the same grid ({len(off_grid)} cases; first 10):\n  {shown}"
+        )
+    shifts = [shift for _, shift in mismatches if shift > 1e-3]
+    if shifts:
+        print(
+            f"Note: {len(shifts)} masks have a slightly different origin or direction in "
+            f"their header (corner voxels up to {max(shifts):.2f} voxels apart; "
+            f"the limit is {MAX_CORNER_SHIFT})"
         )
     if len(set(case.fold for case in cases)) < 2:
         raise ValueError("At least two folds are required to create cross-validation splits")

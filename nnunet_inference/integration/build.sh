@@ -31,14 +31,14 @@ trap 'rm -rf "${stage_dir}"' EXIT
 PYTHONPATH="${PROJECT_ROOT}" "${PYTHON_BIN}" -m nnunet_inference.deployment \
     --source "${MODEL_SRC}" --output "${stage_dir}/model" --checkpoint "${CHECKPOINT}"
 PYTHONPATH="${PROJECT_ROOT}" "${PYTHON_BIN}" -c \
-    'import sys; from nnunet_inference.deployment import validate_deployment; from nnunet_inference.redcap_output import model_instance_base; base = model_instance_base(validate_deployment(sys.argv[1])["bundle_sha256"]); print(f"REDCap instances: {base + 1}-{base + 99}")' \
+    'import sys; from nnunet_inference.deployment import validate_deployment; from nnunet_inference.redcap_output import model_instance_base; base = model_instance_base(validate_deployment(sys.argv[1], verify_files=False)["bundle_sha256"]); print(f"REDCap instances: {base + 1}-{base + 99}")' \
     "${stage_dir}/model"
 rm -rf model _pkg
 mv "${stage_dir}/model" model
+# The runtime package: its modules and data files, without tests, integration or documents.
 mkdir -p _pkg/nnunet_inference
-for module in __init__.py __main__.py dicom_io.py predictor.py pipeline.py parallel.py deployment.py pacs.py redcap_output.py redcap_model_instances.json pr2mask_dictionary.csv; do
-    cp "${PACKAGE_SRC}/${module}" "_pkg/nnunet_inference/${module}"
-done
+find "${PACKAGE_SRC}" -maxdepth 1 -type f \( -name '*.py' -o -name '*.json' -o -name '*.csv' \) \
+    -exec cp -t _pkg/nnunet_inference/ {} +
 if [ "${mode}" = --stage-only ]; then
     echo 'Stage-only model and registry validation complete.'
     exit 0
@@ -52,7 +52,7 @@ docker build --pull --build-arg "VERSION=${VERSION}" --build-arg "IMAGE_NAME=${I
     -f .ror/virt/Dockerfile -t "${DATED_TAG}" -t "${IMAGE_NAME}:latest" .
 docker run --rm --network none --entrypoint /bin/bash "${DATED_TAG}" -lc \
     'set -e
-    python -m nnunet_inference.deployment --output /app/model --verify-only --verify-runtime
+    python -m nnunet_inference.deployment --output /app/model --verify-only --verify-runtime --manifest-only
     python -m nnunet_inference.pacs --help >/dev/null'
 
 if [ "${mode}" = --save ]; then

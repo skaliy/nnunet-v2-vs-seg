@@ -8,9 +8,11 @@ import shutil
 import subprocess
 import tempfile
 
+from .cpu import MAX_THREADS, THREADS_PER_FOLD, set_thread_environment
 from .deployment import MODELS, validate_deployment
 from .dicom_io import tag_pr2mask_mask
 from .pipeline import run_inference
+from .predictor import FIVE_FOLDS
 from .redcap_output import _series, model_instance_base, write_redcap_output
 
 FINAL_OUTPUTS = ("labels", "fused", "fused_vote_map", "reports", "redcap")
@@ -21,21 +23,18 @@ TITLE_LABELS = {"nnunet_large": "nnunet_l"}
 
 
 def configure_cpu():
-    cpus = sorted(os.sched_getaffinity(0))[:16]
-    if len(cpus) < 15:
-        raise RuntimeError(f"Five-fold inference requires at least 15 available CPU threads; got {len(cpus)}")
+    required = len(FIVE_FOLDS) * THREADS_PER_FOLD
+    cpus = sorted(os.sched_getaffinity(0))[:MAX_THREADS]
+    if len(cpus) < required:
+        raise RuntimeError(f"Five-fold inference requires at least {required} available CPU threads; got {len(cpus)}")
     os.sched_setaffinity(0, cpus)
-    for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
-                 "NUMEXPR_NUM_THREADS", "ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"):
-        os.environ[name] = "3"
-    os.environ["nnUNet_def_n_proc"] = "3"
-    os.environ["nnUNet_compile"] = "false"
+    set_thread_environment()
     import torch
     import SimpleITK as sitk
-    torch.set_num_threads(3)
+    torch.set_num_threads(THREADS_PER_FOLD)
     torch.set_num_interop_threads(1)
-    sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(3)
-    print(f"CPU affinity: {cpus}; five workers x three threads", flush=True)
+    sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(THREADS_PER_FOLD)
+    print(f"CPU affinity: {cpus}; {len(FIVE_FOLDS)} workers x {THREADS_PER_FOLD} threads", flush=True)
 
 
 def prepare_output(output_dir):
@@ -55,6 +54,37 @@ def validate_input(input_dir):
         raise ValueError("Missing or duplicate input SOP identities")
     if not source[0].get("StudyInstanceUID") or not source[0].get("SeriesInstanceUID"):
         raise ValueError("Missing input Study/Series identity")
+
+
+def publish(work_dir, output_dir, log_path):
+    """Move the finished products into output_dir, each one complete.
+
+    They are copied to a hidden folder inside output_dir first. That folder is
+    on the same file system, so each product then appears complete, by a
+    rename. During the renames a reader can briefly see some products and not
+    yet the others. If anything fails, the copies and the products already
+    renamed are removed, so nothing that publish wrote is left in output_dir.
+    """
+    stage = Path(tempfile.mkdtemp(prefix=".nnunet-publishing-", dir=output_dir))
+    published = []
+    try:
+        for name in FINAL_OUTPUTS:
+            shutil.copytree(work_dir / name, stage / name)
+        shutil.copy2(log_path, stage / LOG_NAME)
+        for path in stage.rglob("*"):
+            path.chmod(path.stat().st_mode | (0o666 if path.is_file() else 0o777))
+        for name in (*FINAL_OUTPUTS, LOG_NAME):
+            os.rename(stage / name, output_dir / name)
+            published.append(output_dir / name)
+        stage.rmdir()
+    except BaseException:
+        for path in published:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
 
 
 def model_version(deployment, container):
@@ -99,11 +129,7 @@ def postprocess(input_dir, work_dir, output_dir, deployment, *, version, contain
     missing = [n for n in FINAL_OUTPUTS if not (work_dir / n).is_dir()]
     if missing:
         raise RuntimeError(f"Missing required PACS products: {missing}")
-    for name in FINAL_OUTPUTS:
-        shutil.copytree(work_dir / name, output_dir / name)
-    shutil.copy2(log_path, output_dir / LOG_NAME)
-    for path in output_dir.rglob("*"):
-        path.chmod(path.stat().st_mode | (0o666 if path.is_file() else 0o777))
+    publish(work_dir, output_dir, log_path)
 
 
 def run_pacs(input_dir, output_dir, *, model_dir="/app/model", version, container,
@@ -131,10 +157,12 @@ def run_pacs(input_dir, output_dir, *, model_dir="/app/model", version, containe
                     container=container, use_tta=use_tta, pr2mask_dir=pr2mask_dir)
     peak_path = Path("/sys/fs/cgroup/memory.peak")
     peak = int(peak_path.read_text()) if peak_path.exists() else None
-    (output_dir / "runtime_resources.json").write_text(json.dumps(dict(
-        available_cpu_ids=sorted(os.sched_getaffinity(0)), threads_per_fold=3,
+    resources = output_dir / ".runtime_resources.json.writing"
+    resources.write_text(json.dumps(dict(
+        available_cpu_ids=sorted(os.sched_getaffinity(0)), threads_per_fold=THREADS_PER_FOLD,
         cgroup_memory_peak_bytes=peak, deployment_version=version,
         bundle_sha256=deployment["bundle_sha256"], tta=use_tta), indent=2) + "\n")
+    os.replace(resources, output_dir / "runtime_resources.json")
     return deployment
 
 

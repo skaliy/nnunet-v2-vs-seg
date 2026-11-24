@@ -96,6 +96,52 @@ class PacsTests(unittest.TestCase):
             self.assertFalse(any(output.iterdir()))
 
 
+    def test_products_appear_only_when_all_are_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work, output = Path(tmp) / "work", Path(tmp) / "output"
+            output.mkdir()
+            for name in pacs.FINAL_OUTPUTS:
+                (work / name).mkdir(parents=True)
+                (work / name / "file").write_text(name)
+            log = work / pacs.LOG_NAME
+            log.write_text("log")
+            copytree, seen = pacs.shutil.copytree, []
+
+            def recording_copytree(source, destination):
+                seen.append(sorted(p.name for p in output.iterdir()))
+                return copytree(source, destination)
+            with patch.object(pacs.shutil, "copytree", side_effect=recording_copytree):
+                pacs.publish(work, output, log)
+            # While the products were copied, output held only the hidden folder.
+            self.assertEqual(len(seen), len(pacs.FINAL_OUTPUTS))
+            self.assertTrue(all(len(names) == 1 and names[0].startswith(".nnunet-publishing-")
+                                for names in seen), seen)
+            self.assertEqual({p.name for p in output.iterdir()}, set(pacs.FINAL_OUTPUTS) | {pacs.LOG_NAME})
+            self.assertEqual((output / "redcap" / "file").read_text(), "redcap")
+            self.assertEqual((output / "labels").stat().st_mode & 0o777, 0o777)
+            self.assertEqual((output / pacs.LOG_NAME).stat().st_mode & 0o666, 0o666)
+
+    def test_failure_while_publishing_leaves_the_output_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work, output = Path(tmp) / "work", Path(tmp) / "output"
+            output.mkdir()
+            for name in pacs.FINAL_OUTPUTS:
+                (work / name).mkdir(parents=True)
+            log = work / pacs.LOG_NAME
+            log.write_text("log")
+            rename, calls = pacs.os.rename, []
+
+            def failing_rename(source, destination):
+                calls.append(destination)
+                if len(calls) == 3:
+                    raise OSError("disk failure")
+                return rename(source, destination)
+            with patch.object(pacs.os, "rename", side_effect=failing_rename):
+                with self.assertRaisesRegex(OSError, "disk failure"):
+                    pacs.publish(work, output, log)
+            self.assertFalse(any(output.iterdir()))
+            self.assertTrue(all((work / name).is_dir() for name in pacs.FINAL_OUTPUTS))
+
     def test_model_version_names_model_folds_and_image(self):
         members = [dict(member_id=f"fold_{n}") for n in range(5)]
         self.assertEqual(pacs.model_version(dict(model_type="nnunet_large", members=members),

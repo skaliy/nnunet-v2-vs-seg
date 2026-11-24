@@ -23,7 +23,7 @@ revision next to this repository:
 
 ```bash
 git clone https://github.com/MMIV-ML/fastMONAI.git ../fastMONAI
-git -C ../fastMONAI checkout 77588648b3d30ef7a0b09458dd6e9cdc19843723
+git -C ../fastMONAI checkout 3d2fad0186f7fd5f20706faa3a9b0399c2fc0c4a
 python -m pip install -e ../fastMONAI
 ```
 
@@ -44,9 +44,10 @@ case001,images/case001.nii.gz,masks/case001.nii.gz,1
 case002,images/case002.nii.gz,masks/case002.nii.gz,2
 ```
 
-Case IDs must be unique, every image/mask pair must have matching geometry, and
-`fold` must assign each case to one of five validation folds. Paths may be
-absolute or relative to `--source-root`.
+Case IDs must be unique and `fold` must assign each case to one of five
+validation folds. Images must be `.nii.gz` files. Each mask must be on its
+image's grid: the same size and spacing, and corner voxels no more than half the
+smallest voxel spacing apart. Paths may be absolute or relative to `--source-root`.
 
 ```bash
 DATASET_ID=1
@@ -83,7 +84,8 @@ python training/evaluate_cv.py --dataset "$DATASET"
 ```
 
 Evaluation writes per-case and summary CSV files to `cv_metrics/` in the
-trained model directory.
+trained model directory. It uses the installed fastMONAI package and stops when
+a fold's predictions are not exactly its validation cases in `splits_final.json`.
 
 `fold=all` trains one model on all cases; it is not cross-validation. Use
 `--c` to continue an interrupted fold.

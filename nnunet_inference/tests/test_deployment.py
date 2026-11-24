@@ -1,3 +1,5 @@
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -47,6 +49,32 @@ class BundleTests(unittest.TestCase):
             (root / "model/fold_0/checkpoint_final.pth").write_bytes(b"corrupted")
             with self.assertRaisesRegex(ValueError, "file checksum"):
                 deployment.validate_deployment(root / "model")
+            # --manifest-only reads the manifest without hashing the files again.
+            with redirect_stdout(io.StringIO()):
+                deployment.main(["--output", str(root / "model"), "--verify-only", "--manifest-only"])
+                with self.assertRaisesRegex(ValueError, "file checksum"):
+                    deployment.main(["--output", str(root / "model"), "--verify-only"])
+            # Without --verify-only, --manifest-only would be ignored and a bundle built.
+            usage = io.StringIO()
+            with patch.object(deployment, "build_predictor"), redirect_stdout(io.StringIO()), \
+                    redirect_stderr(usage), self.assertRaises(SystemExit):
+                deployment.main(["--source", str(source), "--output", str(root / "other"),
+                                 "--manifest-only"])
+            self.assertIn("--manifest-only needs --verify-only", usage.getvalue())
+
+    def test_manifest_contract_is_what_staging_writes_and_validation_expects(self):
+        contract = deployment.manifest_contract("nnunet_large")
+        self.assertEqual(contract["cpu"], dict(max_threads=16, threads_per_fold=3, memory_limit_gib=64))
+        self.assertEqual(sorted(contract), ["configuration", "cpu", "dataset", "dicom_uid", "folds",
+                                            "model_name", "model_type", "plans", "runtime",
+                                            "schema_version", "trainer"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(deployment, "build_predictor"), redirect_stdout(io.StringIO()):
+                manifest = deployment.prepare_bundle(model_fixture(root), root / "model")
+        self.assertEqual({k: manifest[k] for k in contract}, contract)
+        self.assertEqual(sorted(set(manifest) - set(contract)),
+                         ["bundle_sha256", "checkpoint", "files_sha256", "members"])
 
     def test_wrong_plan_partial_folds_and_wrong_fold_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

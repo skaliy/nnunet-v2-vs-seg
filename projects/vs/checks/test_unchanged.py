@@ -97,6 +97,7 @@ class VSUnchangedTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run("training/evaluate_cv.py", "--dataset", DATASET,
                 "--nnunet-raw", WORKSPACE / "nnUNet_raw",
+                "--nnunet-preprocessed", WORKSPACE / "nnUNet_preprocessed",
                 "--nnunet-results", WORKSPACE / "nnUNet_results", "--output-dir", tmp)
             computed = pd.read_csv(Path(tmp) / "per_case.csv")
         self.assertEqual(len(computed), CASES)
